@@ -725,7 +725,52 @@ class AnycubicMqttBridge:
         try:
             # Handle different stream types
             if self.stream_url.startswith(("http://", "https://")):
-                # For HTTP/HTTPS streams, use requests
+                # For FLV streams, do a more thorough check using ffprobe
+                if self.stream_url.endswith(".flv") or "/flv" in self.stream_url:
+                    try:
+                        import subprocess
+
+                        # Use ffprobe with strict timeout to check if stream has video data
+                        cmd = [
+                            "ffprobe",
+                            "-v",
+                            "error",
+                            "-select_streams",
+                            "v:0",  # Only check video stream
+                            "-show_entries",
+                            "stream=codec_type",
+                            "-of",
+                            "csv=p=0",
+                            "-timeout",
+                            "3000000",  # 3 second timeout in microseconds
+                            self.stream_url,
+                        ]
+
+                        result = subprocess.run(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            timeout=5,
+                        )
+
+                        # Check if we got "video" in the output
+                        output = result.stdout.decode("utf-8").strip()
+                        available = "video" in output and result.returncode == 0
+
+                        logger.info(
+                            f"FLV stream data check result: {available} (output: {output})"
+                        )
+                        return available
+                    except subprocess.TimeoutExpired:
+                        logger.warning("FLV stream check timed out - no active video")
+                        return False
+                    except FileNotFoundError:
+                        logger.warning(
+                            "ffprobe not available, falling back to basic HTTP check"
+                        )
+                        # Fall through to basic HTTP check
+
+                # Basic HTTP check for non-FLV streams or if ffprobe failed
                 response = requests.head(self.stream_url, timeout=3)
                 available = response.status_code < 400
                 logger.info(
@@ -817,15 +862,22 @@ class AnycubicMqttBridge:
                     # -i: Input file
                     # -vframes 1: Extract just one video frame
                     # -q:v 2: Set quality (2 is high quality, lower number is better)
+                    # Use ffmpeg with additional parameters to handle slow streams
                     ffmpeg_cmd = [
                         "ffmpeg",
-                        "-y",
+                        "-y",  # Overwrite output without asking
+                        "-timeout",
+                        "5000000",  # 5 second connection timeout in microseconds
+                        "-analyzeduration",
+                        "1000000",  # Analyze only 1 second of stream
+                        "-probesize",
+                        "1000000",  # Use small probe size
                         "-i",
                         self.stream_url,
                         "-vframes",
-                        "1",
+                        "1",  # Extract just one video frame
                         "-q:v",
-                        "2",
+                        "2",  # High quality
                         temp_path,
                     ]
 
@@ -834,7 +886,7 @@ class AnycubicMqttBridge:
                         ffmpeg_cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
-                        timeout=10,  # Set a reasonable timeout
+                        timeout=7,  # Set a reasonable timeout
                     )
 
                     if result.returncode == 0:
