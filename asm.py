@@ -14,7 +14,7 @@ import random
 
 # Set up logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("anycubic_mqtt_bridge")
 
@@ -1136,6 +1136,7 @@ class AnycubicMqttBridge:
                 # If this is an info report message with printer status
                 if "type" in data and data["type"] == "info":
                     printer_data = data["data"]
+                    logger.debug(f"Received printer info: {json.dumps(printer_data)}")
                     self.device_name = printer_data.get(
                         "printerName", "Anycubic Printer"
                     )
