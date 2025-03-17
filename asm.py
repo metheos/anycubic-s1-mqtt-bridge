@@ -620,6 +620,89 @@ class AnycubicMqttBridge:
 
         # Let the connection monitor handle reconnection with backoff
 
+    def query_video_status(self):
+        """Query the current video status from the printer"""
+        if not self.printer_mode_id or not self.printer_device_id:
+            logger.warning(
+                "Cannot query video status: Missing printer mode ID or device ID"
+            )
+            return False
+
+        try:
+            import uuid
+
+            # Create message ID
+            message_id = str(uuid.uuid4())
+
+            # Format the topic
+            topic = f"anycubic/anycubicCloud/v1/web/printer/{self.printer_mode_id}/{self.printer_device_id}/video"
+            response_topic = f"anycubic/anycubicCloud/v1/printer/public/{self.printer_mode_id}/{self.printer_device_id}/video/report"
+
+            # Create request payload
+            status_request = {
+                "type": "video",
+                "action": "query",
+                "timestamp": int(time.time() * 1000),
+                "msgid": message_id,
+                "data": None,
+            }
+
+            # Create attributes to track response
+            self.video_status_received = False
+            self.video_status = None
+            self.video_status_message_id = message_id
+
+            # Register a callback in the main handler
+            def video_status_handler(topic, payload):
+                if (
+                    topic == response_topic
+                    and payload.get("type") == "video"
+                    and payload.get("action") == "query"
+                    and payload.get("msgid") == message_id
+                ):
+                    logger.info(f"Received video status: {payload}")
+                    self.video_status_received = True
+                    if payload.get("data") and "status" in payload.get("data", {}):
+                        self.video_status = payload["data"]["status"]
+                    return True
+                return False
+
+            # Register this handler in the class
+            if not hasattr(self, "message_handlers"):
+                self.message_handlers = []
+            self.message_handlers.append(video_status_handler)
+
+            # Make sure we're subscribed to the right topic
+            self.anycubic_client.subscribe(response_topic)
+
+            # Small delay to ensure subscription is processed
+            time.sleep(0.5)
+
+            # Send the request
+            logger.info(f"Querying video status with topic: {topic}")
+            self.anycubic_client.publish(topic, json.dumps(status_request))
+
+            # Poll for response with timeout
+            start_time = time.time()
+            timeout_duration = 5.0  # 5 seconds timeout
+
+            while (
+                not self.video_status_received
+                and (time.time() - start_time) < timeout_duration
+            ):
+                time.sleep(0.1)  # Check every 100ms
+
+            # Clean up
+            if hasattr(self, "message_handlers"):
+                self.message_handlers.remove(video_status_handler)
+
+            logger.info(f"Video status query result: {self.video_status}")
+            return self.video_status
+
+        except Exception as e:
+            logger.error(f"Error querying video status: {e}")
+            return None
+
     def start_video_capture(self):
         """Send command to start video capture on the printer"""
         if not self.printer_mode_id or not self.printer_device_id:
@@ -720,10 +803,17 @@ class AnycubicMqttBridge:
             logger.warning("No camera stream URL available for snapshot")
             return None
 
-        # Start video capture
-        if not self.start_video_capture():
-            logger.warning("Video capture start failed, skipping snapshot")
-            return None
+        # First query the video status
+        video_status = self.query_video_status()
+
+        # Only start video capture if needed
+        if video_status != "capturing":
+            logger.info("Video not capturing, starting video capture")
+            if not self.start_video_capture():
+                logger.warning("Video capture start failed, skipping snapshot")
+                return None
+        else:
+            logger.info("Video already capturing, skipping start_video_capture")
 
         try:
             logger.info(f"Taking snapshot from {self.stream_url}")
