@@ -3,9 +3,6 @@ FROM python:3.9-slim
 # Install avahi-daemon for mDNS resolution
 RUN apt-get update && apt-get install -y avahi-daemon libnss-mdns dbus && rm -rf /var/lib/apt/lists/*
 
-# Enable and start dbus and avahi-daemon
-RUN systemctl enable dbus && systemctl enable avahi-daemon
-
 # Set the working directory
 WORKDIR /app
 
