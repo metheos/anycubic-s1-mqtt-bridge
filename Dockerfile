@@ -1,5 +1,8 @@
 FROM python:3.9-slim
 
+# Install avahi-daemon for mDNS resolution
+RUN apt-get update && apt-get install -y avahi-daemon libnss-mdns && rm -rf /var/lib/apt/lists/*
+
 # Set the working directory
 WORKDIR /app
 
