@@ -106,6 +106,17 @@ class AnycubicMqttBridge:
 
         self.setup_clients()
 
+    def get_device_info(self):
+        """Return consistent device info dictionary for Home Assistant entities"""
+        device_id = self.printer_cn if self.printer_cn else "anycubic_printer"
+        return {
+            "identifiers": [device_id],
+            "name": getattr(self, "device_name", "Anycubic Printer"),
+            "model": getattr(self, "device_model", "Unknown"),
+            "manufacturer": "Anycubic",
+            "sw_version": getattr(self, "printer_version", "Unknown"),
+        }
+
     def discover_printer_with_retry(self):
         """Discover the printer with exponential backoff retry"""
         delay = INITIAL_DISCOVERY_RETRY_DELAY
@@ -379,16 +390,9 @@ class AnycubicMqttBridge:
     def create_connectivity_entity(self):
         """Create connectivity sensor in Home Assistant"""
         try:
-            # Define basic device info with unique identifier based on CN
+            # Get topic prefix and device info
             topic_prefix = self.get_topic_prefix()
-            device_id = self.printer_cn if self.printer_cn else "anycubic_printer"
-
-            device_info = {
-                "identifiers": [device_id],
-                "name": getattr(self, "printer_model", "Anycubic Printer"),
-                "model": getattr(self, "printer_model", "Unknown"),
-                "manufacturer": "Anycubic",
-            }
+            device_info = self.get_device_info()
 
             # Create connectivity sensor with unique topic
             connectivity_config = {
@@ -988,17 +992,9 @@ class AnycubicMqttBridge:
 
     def _create_light_entity(self):
         """Create a light entity in Home Assistant for printer light control"""
-        # Get topic prefix for this printer
+        # Get topic prefix and device info
         topic_prefix = self.get_topic_prefix()
-
-        # Basic printer device info with unique identifier
-        device_id = self.printer_cn if self.printer_cn else "anycubic_printer"
-        device_info = {
-            "identifiers": [device_id],
-            "name": getattr(self, "printer_model", "Anycubic Printer"),
-            "model": getattr(self, "printer_model", "Unknown"),
-            "manufacturer": "Anycubic",
-        }
+        device_info = self.get_device_info()
 
         # Light entity configuration with dynamic topic prefix
         light_config = {
@@ -1204,17 +1200,21 @@ class AnycubicMqttBridge:
                 # If this is an info report message with printer status
                 if "type" in data and data["type"] == "info":
                     printer_data = data["data"]
-                    device_name = printer_data.get("printerName", "Anycubic Printer")
-                    device_model = printer_data.get("model", "Unknown")
+                    self.device_name = printer_data.get(
+                        "printerName", "Anycubic Printer"
+                    )
+                    self.device_model = printer_data.get("model", "Unknown")
 
                     # Define the device for all sensors
-                    device_info = {
-                        "identifiers": ["anycubic_printer"],
-                        "name": device_name,
-                        "model": device_model,
-                        "manufacturer": "Anycubic",
-                        "sw_version": printer_data.get("version", "Unknown"),
-                    }
+                    device_info = self.get_device_info()
+
+                    # Update device info with any additional discovered properties
+                    if "version" in printer_data:
+                        self.printer_version = printer_data["version"]
+                        device_info["sw_version"] = printer_data["version"]
+
+                    if "printerName" in printer_data:
+                        device_info["name"] = printer_data["printerName"]
 
                     # Create individual sensors
                     sensors = []
