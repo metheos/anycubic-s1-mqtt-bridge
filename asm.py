@@ -82,6 +82,7 @@ class AnycubicMqttBridge:
         self.last_reconnect_attempt = 0
         self.reconnect_delay = 1  # Initial delay in seconds
         self.connection_healthy = Event()  # Event to signal healthy connection
+        self.snapshot_enabled = Event()  # Event to control snapshot worker
 
         # Initialize with empty values - we'll get them from discovery or env vars
         self.printer_mode_id = get_required_env(
@@ -264,10 +265,17 @@ class AnycubicMqttBridge:
                     if self.anycubic_connection_state != ConnectionState.CONNECTED:
                         logger.info("Anycubic connection is healthy")
                         self.anycubic_connection_state = ConnectionState.CONNECTED
+                        # Enable snapshot worker when printer is connected
+                        if self.stream_url:
+                            self.snapshot_enabled.set()
+                            logger.info("Snapshot worker enabled - printer connected")
                 else:
                     if self.anycubic_connection_state == ConnectionState.CONNECTED:
                         logger.warning("Lost connection to Anycubic")
                         self.anycubic_connection_state = ConnectionState.DISCONNECTED
+                        # Disable snapshot worker when printer disconnects
+                        self.snapshot_enabled.clear()
+                        logger.info("Snapshot worker paused - printer disconnected")
 
                 # Update status in Home Assistant
                 self.update_connectivity_status()
@@ -433,6 +441,11 @@ class AnycubicMqttBridge:
             self.anycubic_connection_state = ConnectionState.CONNECTED
             self.update_connectivity_status()
 
+            # Enable snapshots if stream URL is available
+            if self.stream_url:
+                self.snapshot_enabled.set()
+                logger.info("Snapshot worker enabled - connection established")
+
             # Subscribe to topics
             self.subscribe_to_anycubic_topics()
 
@@ -578,6 +591,10 @@ class AnycubicMqttBridge:
         self.anycubic_connection_state = ConnectionState.DISCONNECTED
         self.update_connectivity_status()
         self.connection_healthy.clear()
+
+        # Disable snapshots when printer disconnects
+        self.snapshot_enabled.clear()
+        logger.info("Snapshot worker paused - disconnected from printer")
 
         # Let the connection monitor handle reconnection with backoff
 
@@ -781,6 +798,15 @@ class AnycubicMqttBridge:
 
     def snapshot_worker(self):
         """Background worker that periodically takes snapshots"""
+        # Set initial state based on connection status
+        if (
+            self.anycubic_connection_state == ConnectionState.CONNECTED
+            and self.stream_url
+        ):
+            self.snapshot_enabled.set()
+        else:
+            self.snapshot_enabled.clear()
+
         while running and self.stream_url:
             try:
                 image_data = self.take_snapshot()
