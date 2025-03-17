@@ -647,20 +647,44 @@ class AnycubicMqttBridge:
                 "data": None,
             }
 
+            # Log the complete request for debugging
+            logger.info(f"Video status request payload: {json.dumps(status_request)}")
+
             # Create attributes to track response
             self.video_status_received = False
             self.video_status = None
             self.video_status_message_id = message_id
 
+            # Register a debug callback to catch ANY response on this topic
+            def debug_handler(client, userdata, msg):
+                try:
+                    payload_str = msg.payload.decode("utf-8")
+                    logger.info(f"DEBUG - Received on {msg.topic}: {payload_str}")
+                except Exception as e:
+                    logger.info(
+                        f"DEBUG - Received non-text message on {msg.topic}: {e}"
+                    )
+
+            # Register the debug handler
+            debug_topic = f"anycubic/anycubicCloud/v1/+/+/{self.printer_mode_id}/{self.printer_device_id}/+/+"
+            self.anycubic_client.message_callback_add(debug_topic, debug_handler)
+
             # Register a callback in the main handler
             def video_status_handler(topic, payload):
+                logger.info(
+                    f"Checking message on {topic} against expected {response_topic}"
+                )
+                # Log ALL potential responses for debugging
+                if topic.endswith("/video/report"):
+                    logger.info(f"Found video report message: {payload}")
+
                 if (
                     topic == response_topic
                     and payload.get("type") == "video"
                     and payload.get("action") == "query"
                     and payload.get("msgid") == message_id
                 ):
-                    logger.info(f"Received video status: {payload}")
+                    logger.info(f"Received matching video status: {payload}")
                     self.video_status_received = True
                     if payload.get("data") and "status" in payload.get("data", {}):
                         self.video_status = payload["data"]["status"]
@@ -672,14 +696,20 @@ class AnycubicMqttBridge:
                 self.message_handlers = []
             self.message_handlers.append(video_status_handler)
 
-            # Make sure we're subscribed to the right topic
+            # Make sure we're subscribed to the right topics
+            logger.info(f"Subscribing to response topic: {response_topic}")
             self.anycubic_client.subscribe(response_topic)
+
+            # More general subscription as fallback
+            general_topic = f"anycubic/anycubicCloud/v1/+/+/{self.printer_mode_id}/{self.printer_device_id}/video/+"
+            logger.info(f"Subscribing to general topic: {general_topic}")
+            self.anycubic_client.subscribe(general_topic)
 
             # Small delay to ensure subscription is processed
             time.sleep(0.5)
 
             # Send the request
-            logger.info(f"Querying video status with topic: {topic}")
+            logger.info(f"Sending video status query to topic: {topic}")
             self.anycubic_client.publish(topic, json.dumps(status_request))
 
             # Poll for response with timeout
@@ -696,7 +726,17 @@ class AnycubicMqttBridge:
             if hasattr(self, "message_handlers"):
                 self.message_handlers.remove(video_status_handler)
 
-            logger.info(f"Video status query result: {self.video_status}")
+            # Remove debug handler
+            try:
+                self.anycubic_client.message_callback_remove(debug_topic)
+            except Exception:
+                pass
+
+            if self.video_status_received:
+                logger.info(f"Video status query successful: {self.video_status}")
+            else:
+                logger.warning("Video status query timed out without response")
+
             return self.video_status
 
         except Exception as e:
