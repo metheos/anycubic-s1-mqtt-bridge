@@ -671,15 +671,20 @@ class AnycubicMqttBridge:
 
             # Register a callback in the main handler
             def video_status_handler(topic, payload):
-                logger.info(
-                    f"Checking message on {topic} against expected {response_topic}"
-                )
+                # Accept responses from either the specific or general response topic
+                expected_topics = [
+                    response_topic,
+                    f"anycubic/anycubicCloud/v1/printer/public/{self.printer_mode_id}/{self.printer_device_id}/response",
+                ]
+
+                logger.info(f"Checking message on {topic}")
+
                 # Log ALL potential responses for debugging
-                if topic.endswith("/video/report"):
-                    logger.info(f"Found video report message: {payload}")
+                if "video" in topic or topic.endswith("/response"):
+                    logger.info(f"Found potential video response: {payload}")
 
                 if (
-                    topic == response_topic
+                    (topic in expected_topics)
                     and payload.get("type") == "video"
                     and payload.get("action") == "query"
                     and payload.get("msgid") == message_id
@@ -701,8 +706,8 @@ class AnycubicMqttBridge:
             self.anycubic_client.subscribe(response_topic)
 
             # More general subscription as fallback
-            general_topic = f"anycubic/anycubicCloud/v1/+/+/{self.printer_mode_id}/{self.printer_device_id}/video/+"
-            logger.info(f"Subscribing to general topic: {general_topic}")
+            general_topic = f"anycubic/anycubicCloud/v1/printer/public/{self.printer_mode_id}/{self.printer_device_id}/response"
+            logger.info(f"Subscribing to general response topic: {general_topic}")
             self.anycubic_client.subscribe(general_topic)
 
             # Small delay to ensure subscription is processed
@@ -1718,14 +1723,24 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    bridge = AnycubicMqttBridge()
-    if not bridge.connect():
-        logger.error("Failed to establish initial connections, exiting")
-        return 1
-
-    logger.info("Anycubic MQTT bridge is running")
+    # Save terminal settings
+    import termios
+    import sys
 
     try:
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+    except termios.error:
+        old_settings = None
+
+    try:
+        bridge = AnycubicMqttBridge()
+        if not bridge.connect():
+            logger.error("Failed to establish initial connections, exiting")
+            return 1
+
+        logger.info("Anycubic MQTT bridge is running")
+
         # Keep the main thread running
         while running:
             time.sleep(1)
@@ -1734,6 +1749,13 @@ def main():
     finally:
         bridge.disconnect()
         logger.info("Bridge stopped")
+
+        # Restore terminal settings
+        if old_settings:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            except Exception:
+                pass
 
     return 0
 
