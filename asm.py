@@ -44,11 +44,9 @@ HA_PASS = get_required_env("HA_PASS")  # Optional
 KEEPALIVE_INTERVAL = int(get_required_env("KEEPALIVE_INTERVAL", "60"))
 
 # Discovery and reconnection configuration
-MAX_DISCOVERY_ATTEMPTS = int(get_required_env("MAX_DISCOVERY_ATTEMPTS", "10"))
 INITIAL_DISCOVERY_RETRY_DELAY = int(
     get_required_env("INITIAL_DISCOVERY_RETRY_DELAY", "5")
 )
-MAX_DISCOVERY_RETRY_DELAY = int(get_required_env("MAX_DISCOVERY_RETRY_DELAY", "300"))
 CONNECTION_CHECK_INTERVAL = int(get_required_env("CONNECTION_CHECK_INTERVAL", "30"))
 
 # Global flag for controlling the main loop
@@ -132,39 +130,35 @@ class AnycubicMqttBridge:
         }
 
     def discover_printer_with_retry(self):
-        """Discover the printer with exponential backoff retry"""
+        """Discover the printer with exponential backoff retry, continuing indefinitely"""
         delay = INITIAL_DISCOVERY_RETRY_DELAY
         attempts = 0
+        max_backoff_delay = 300  # Cap backoff at 5 minutes between attempts
 
-        while attempts < MAX_DISCOVERY_ATTEMPTS and running:
-            logger.info(
-                f"Printer discovery attempt {attempts+1}/{MAX_DISCOVERY_ATTEMPTS}"
-            )
+        # Keep trying indefinitely until we succeed or the program is terminated
+        while running:
+            attempts += 1
+            logger.info(f"Printer discovery attempt {attempts}")
 
             if self.discover_printer():
                 logger.info("Printer discovery successful")
                 return True
 
-            attempts += 1
-            if attempts >= MAX_DISCOVERY_ATTEMPTS:
-                logger.error(
-                    f"Maximum discovery attempts reached ({MAX_DISCOVERY_ATTEMPTS})"
+            # If we have environment variables as fallback, use them but keep retrying discovery
+            if self.printer_mode_id and self.printer_device_id and attempts == 1:
+                logger.info(
+                    "Using printer parameters from environment variables while discovery continues"
                 )
-                break
+                # Don't return here - we'll keep trying discovery in the background
 
-            logger.info(f"Discovery failed, retrying in {delay} seconds...")
+            logger.info(f"Discovery failed, retrying in {delay:.1f} seconds...")
             time.sleep(delay)
 
-            # Exponential backoff with jitter
-            delay = min(MAX_DISCOVERY_RETRY_DELAY, delay * 2) * (
-                0.8 + 0.4 * random.random()
-            )
+            # Exponential backoff with jitter, but cap at max_backoff_delay
+            delay = min(max_backoff_delay, delay * 1.5) * (0.8 + 0.4 * random.random())
 
-        # If we have environment variables as fallback, log and continue
-        if self.printer_mode_id and self.printer_device_id:
-            logger.info("Using printer parameters from environment variables")
-            return True
-
+        # This will only be reached if running is set to False during discovery
+        logger.warning("Discovery terminated by shutdown signal")
         return False
 
     def setup_clients(self):
