@@ -1191,11 +1191,25 @@ class AnycubicMqttBridge:
                             {
                                 "name": "Hotbed Temperature",
                                 "unique_id": f"{topic_prefix}_hotbed_temp",
-                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/temperature",
                                 "value_template": "{{ value_json.hotbed_temp }}",
                                 "unit_of_measurement": "°C",
                                 "device_class": "temperature",
                                 "icon": "mdi:printer-3d-nozzle-heat",
+                                "device": device_info,
+                            }
+                        )
+
+                        # Target hotbed temperature
+                        sensors.append(
+                            {
+                                "name": "Target Hotbed Temperature",
+                                "unique_id": f"{topic_prefix}_target_hotbed_temp",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/temperature",
+                                "value_template": "{{ value_json.target_hotbed_temp }}",
+                                "unit_of_measurement": "°C",
+                                "device_class": "temperature",
+                                "icon": "mdi:thermometer-chevron-up",
                                 "device": device_info,
                             }
                         )
@@ -1205,11 +1219,25 @@ class AnycubicMqttBridge:
                             {
                                 "name": "Nozzle Temperature",
                                 "unique_id": f"{topic_prefix}_nozzle_temp",
-                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/temperature",
                                 "value_template": "{{ value_json.nozzle_temp }}",
                                 "unit_of_measurement": "°C",
                                 "device_class": "temperature",
                                 "icon": "mdi:printer-3d-nozzle-heat",
+                                "device": device_info,
+                            }
+                        )
+
+                        # Target nozzle temperature
+                        sensors.append(
+                            {
+                                "name": "Target Nozzle Temperature",
+                                "unique_id": f"{topic_prefix}_target_nozzle_temp",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/temperature",
+                                "value_template": "{{ value_json.target_nozzle_temp }}",
+                                "unit_of_measurement": "°C",
+                                "device_class": "temperature",
+                                "icon": "mdi:thermometer-chevron-up",
                                 "device": device_info,
                             }
                         )
@@ -1334,20 +1362,27 @@ class AnycubicMqttBridge:
                         self.printer_state = printer_data["state"]
                         logger.debug(f"Updated printer state: {self.printer_state}")
 
+                    # Also publish a separate temperature update if temperature data is available
+                    if "temp" in printer_data:
+                        temp_state = {
+                            "hotbed_temp": printer_data.get("temp", {}).get("curr_hotbed_temp", 0),
+                            "nozzle_temp": printer_data.get("temp", {}).get("curr_nozzle_temp", 0),
+                            "target_hotbed_temp": printer_data.get("temp", {}).get("target_hotbed_temp", 0),
+                            "target_nozzle_temp": printer_data.get("temp", {}).get("target_nozzle_temp", 0),
+                            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                        
+                        # Publish temperature data to Home Assistant
+                        self.ha_client.publish(
+                            f"homeassistant/sensor/{topic_prefix}/temperature",
+                            json.dumps(temp_state),
+                            retain=True
+                        )
+                        
+                        logger.debug(f"Published temperature update from info report: {json.dumps(temp_state)}")
+
                     state_data = {
                         "state": printer_data.get("state", "unknown"),
-                        "hotbed_temp": printer_data.get("temp", {}).get(
-                            "curr_hotbed_temp", 0
-                        ),
-                        "nozzle_temp": printer_data.get("temp", {}).get(
-                            "curr_nozzle_temp", 0
-                        ),
-                        "target_hotbed_temp": printer_data.get("temp", {}).get(
-                            "target_hotbed_temp", 0
-                        ),
-                        "target_nozzle_temp": printer_data.get("temp", {}).get(
-                            "target_nozzle_temp", 0
-                        ),
                         "fan_speed_pct": printer_data.get("fan_speed_pct", 0),
                         "aux_fan_speed_pct": printer_data.get("aux_fan_speed_pct", 0),
                         "print_speed_mode": printer_data.get("print_speed_mode", 0),
@@ -1364,6 +1399,43 @@ class AnycubicMqttBridge:
                         retain=True,
                     )
                     logger.info("Published printer state data to Home Assistant")
+                                # If this is a temperature report message
+                elif "type" in data and data["type"] == "tempature":
+                    logger.info("Received temperature report")
+                    try:
+                        if "data" in data and data["data"]:
+                            temp_data = data["data"]
+                            
+                            # Save the temperature data for future use
+                            if not hasattr(self, "latest_temp_data"):
+                                self.latest_temp_data = {}
+                            
+                            # Update our stored temperature data
+                            self.latest_temp_data.update(temp_data)
+                            
+                            # Get topic prefix for publishing
+                            topic_prefix = self.get_topic_prefix()
+                            
+                            # Create a state update with just temperature information
+                            temp_state = {
+                                "hotbed_temp": temp_data.get("curr_hotbed_temp", 0),
+                                "nozzle_temp": temp_data.get("curr_nozzle_temp", 0),
+                                "target_hotbed_temp": temp_data.get("target_hotbed_temp", 0),
+                                "target_nozzle_temp": temp_data.get("target_nozzle_temp", 0),
+                                "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            }
+                            
+                            # Publish temperature data to Home Assistant
+                            self.ha_client.publish(
+                                f"homeassistant/sensor/{topic_prefix}/temperature",
+                                json.dumps(temp_state),
+                                retain=True
+                            )
+                            
+                            logger.debug(f"Published temperature update: {json.dumps(temp_state)}")
+                    except Exception as e:
+                        logger.error(f"Error processing temperature data: {e}")
+                        logger.debug(traceback.format_exc())
                 else:
                     # Handle other types of messages
                     topic_parts = msg.topic.split("/")
