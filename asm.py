@@ -1248,7 +1248,7 @@ class AnycubicMqttBridge:
                             {
                                 "name": "Fan Speed",
                                 "unique_id": f"{topic_prefix}_fan_speed",
-                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/fan",
                                 "value_template": "{{ value_json.fan_speed_pct }}",
                                 "unit_of_measurement": "%",
                                 "icon": "mdi:fan",
@@ -1261,9 +1261,21 @@ class AnycubicMqttBridge:
                             {
                                 "name": "Aux Fan Speed",
                                 "unique_id": f"{topic_prefix}_aux_fan_speed",
-                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/fan",
                                 "value_template": "{{ value_json.aux_fan_speed_pct }}",
                                 "unit_of_measurement": "%",
+                                "icon": "mdi:fan",
+                                "device": device_info,
+                            }
+                        )
+
+                    if "box_fan_level" in printer_data:  
+                        sensors.append(
+                            {
+                                "name": "Box Fan Level",
+                                "unique_id": f"{topic_prefix}_box_fan_level",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/fan",
+                                "value_template": "{{ value_json.box_fan_level }}",
                                 "icon": "mdi:fan",
                                 "device": device_info,
                             }
@@ -1362,6 +1374,24 @@ class AnycubicMqttBridge:
                         self.printer_state = printer_data["state"]
                         logger.debug(f"Updated printer state: {self.printer_state}")
 
+                    # Also publish a separate fan update if fan data is available
+                    if "fan_speed_pct" in printer_data or "aux_fan_speed_pct" in printer_data:
+                        fan_state = {
+                            "fan_speed_pct": printer_data.get("fan_speed_pct", 0),
+                            "aux_fan_speed_pct": printer_data.get("aux_fan_speed_pct", 0),
+                            "box_fan_level": printer_data.get("box_fan_level", 0) if "box_fan_level" in printer_data else 0,
+                            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                        
+                        # Publish fan data to Home Assistant
+                        self.ha_client.publish(
+                            f"homeassistant/sensor/{topic_prefix}/fan",
+                            json.dumps(fan_state),
+                            retain=True
+                        )
+                        
+                        logger.debug(f"Published fan update from info report: {json.dumps(fan_state)}")
+
                     # Also publish a separate temperature update if temperature data is available
                     if "temp" in printer_data:
                         temp_state = {
@@ -1383,8 +1413,6 @@ class AnycubicMqttBridge:
 
                     state_data = {
                         "state": printer_data.get("state", "unknown"),
-                        "fan_speed_pct": printer_data.get("fan_speed_pct", 0),
-                        "aux_fan_speed_pct": printer_data.get("aux_fan_speed_pct", 0),
                         "print_speed_mode": printer_data.get("print_speed_mode", 0),
                         "ip_address": printer_data.get("ip", ""),
                         "camera_url": printer_data.get("urls", {}).get("rtspUrl", ""),
@@ -1486,6 +1514,43 @@ class AnycubicMqttBridge:
                     except Exception as e:
                         logger.error(f"Error processing print job data: {e}")
                         logger.debug(traceback.format_exc())
+                
+                elif "type" in data and data["type"] == "fan":
+                    logger.info("Received fan speed report")
+                    try:
+                        if "data" in data and data["data"]:
+                            fan_data = data["data"]
+                            
+                            # Save the fan data for future use
+                            if not hasattr(self, "latest_fan_data"):
+                                self.latest_fan_data = {}
+                            
+                            # Update our stored fan data
+                            self.latest_fan_data.update(fan_data)
+                            
+                            # Get topic prefix for publishing
+                            topic_prefix = self.get_topic_prefix()
+                            
+                            # Create a state update with just fan information
+                            fan_state = {
+                                "fan_speed_pct": fan_data.get("fan_speed_pct", 0),
+                                "aux_fan_speed_pct": fan_data.get("aux_fan_speed_pct", 0),
+                                "box_fan_level": fan_data.get("box_fan_level", 0),
+                                "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            }
+                            
+                            # Publish fan data to Home Assistant
+                            self.ha_client.publish(
+                                f"homeassistant/sensor/{topic_prefix}/fan",
+                                json.dumps(fan_state),
+                                retain=True
+                            )
+                            
+                            logger.debug(f"Published fan update: {json.dumps(fan_state)}")
+                    except Exception as e:
+                        logger.error(f"Error processing fan data: {e}")
+                        logger.debug(traceback.format_exc())
+                        
                 else:
                     # Handle other types of messages
                     topic_parts = msg.topic.split("/")
@@ -1515,7 +1580,7 @@ class AnycubicMqttBridge:
             import traceback
 
             logger.error(traceback.format_exc())
-            
+
     def _create_print_sensors(self):
         """Create print job related sensors in Home Assistant"""
         # Get topic prefix and device info
