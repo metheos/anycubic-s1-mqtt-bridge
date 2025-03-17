@@ -1405,7 +1405,6 @@ class AnycubicMqttBridge:
                         retain=True,
                     )
                     logger.info("Published printer state data to Home Assistant")
-                    logger.info("Published printer state data to Home Assistant")
                 else:
                     # Handle other types of messages
                     topic_parts = msg.topic.split("/")
@@ -1548,9 +1547,10 @@ class AnycubicMqttBridge:
                         self.printer_model = data["modelName"]
 
                     # Step 2: Get detailed printer info by calling the control URL
-                    if "ctrlInfoUrl" in data and "token" in data:
+                    if "ctrlInfoUrl" in data and "token" in data and "cn" in data:
                         ctrl_url = data["ctrlInfoUrl"]
                         token = data["token"]
+                        self.printer_cn = data["cn"]
 
                         # Current timestamp in milliseconds
                         ts = int(time.time() * 1000)
@@ -1682,13 +1682,6 @@ class AnycubicMqttBridge:
                                                 ]
                                                 logger.info(
                                                     f"Using discovered model name: {self.printer_model}"
-                                                )
-
-                                            # Extract and save the printer CN (serial number)
-                                            if "cn" in printer_data:
-                                                self.printer_cn = printer_data["cn"]
-                                                logger.info(
-                                                    f"Using discovered printer CN: {self.printer_cn}"
                                                 )
 
                                             # Also save the certificate and private key if needed for future use
