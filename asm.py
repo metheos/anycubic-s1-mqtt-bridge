@@ -704,7 +704,9 @@ class AnycubicMqttBridge:
             return None
 
         # Start video capture
-        self.start_video_capture()
+        if not self.start_video_capture():
+            logger.warning("Video capture start failed, skipping snapshot")
+            return None
 
         try:
             logger.info(f"Taking snapshot from {self.stream_url}")
