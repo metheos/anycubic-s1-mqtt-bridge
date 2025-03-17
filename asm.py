@@ -85,15 +85,10 @@ class AnycubicMqttBridge:
         self.snapshot_enabled = Event()  # Event to control snapshot worker
 
         # Initialize with empty values - we'll get them from discovery or env vars
-        self.printer_mode_id = get_required_env(
-            "PRINTER_MODE_ID", None
-        )  # No longer required
-        self.printer_device_id = get_required_env(
-            "PRINTER_DEVICE_ID", None
-        )  # No longer required
-        self.printer_model = get_required_env(
-            "PRINTER_MODEL", None
-        )  # No longer required
+        self.printer_mode_id = get_required_env("PRINTER_MODE_ID", None)
+        self.printer_device_id = get_required_env("PRINTER_DEVICE_ID", None)
+        self.printer_model = get_required_env("PRINTER_MODEL", None)
+        self.printer_cn = get_required_env("PRINTER_CN", None)  # Add printer_cn field
 
         # Try to discover the printer with retry logic
         self.discover_printer_with_retry()
@@ -328,12 +323,22 @@ class AnycubicMqttBridge:
             # Sleep until next check
             time.sleep(CONNECTION_CHECK_INTERVAL)
 
+    def get_topic_prefix(self):
+        """Get the MQTT topic prefix including printer CN if available"""
+        # Use printer CN/serial to create unique topics
+        if hasattr(self, "printer_cn") and self.printer_cn:
+            return f"anycubic_{self.printer_cn.lower().replace('-', '_')}"
+        return "anycubic_printer"  # Default if no CN is available
+
     def update_connectivity_status(self):
         """Update connectivity status in Home Assistant"""
         if not hasattr(self, "ha_client") or self.ha_client is None:
             return
 
         try:
+            # Get topic prefix
+            topic_prefix = self.get_topic_prefix()
+
             # Create connectivity sensor if it doesn't exist
             if not self.connectivity_entity_created and self.ha_client.is_connected():
                 self.create_connectivity_entity()
@@ -362,8 +367,9 @@ class AnycubicMqttBridge:
                     "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
 
+                # Use the printer-specific topic
                 self.ha_client.publish(
-                    "homeassistant/sensor/anycubic_printer_connectivity/state",
+                    f"homeassistant/sensor/{topic_prefix}_connectivity/state",
                     json.dumps(status_data),
                     retain=True,
                 )
@@ -373,36 +379,39 @@ class AnycubicMqttBridge:
     def create_connectivity_entity(self):
         """Create connectivity sensor in Home Assistant"""
         try:
-            # Define basic device info
+            # Define basic device info with unique identifier based on CN
+            topic_prefix = self.get_topic_prefix()
+            device_id = self.printer_cn if self.printer_cn else "anycubic_printer"
+
             device_info = {
-                "identifiers": ["anycubic_printer"],
+                "identifiers": [device_id],
                 "name": getattr(self, "printer_model", "Anycubic Printer"),
                 "model": getattr(self, "printer_model", "Unknown"),
                 "manufacturer": "Anycubic",
             }
 
-            # Create connectivity sensor
+            # Create connectivity sensor with unique topic
             connectivity_config = {
                 "name": "Printer Connectivity",
-                "unique_id": "anycubic_printer_connectivity",
-                "state_topic": "homeassistant/sensor/anycubic_printer_connectivity/state",
+                "unique_id": f"{topic_prefix}_connectivity",
+                "state_topic": f"homeassistant/sensor/{topic_prefix}_connectivity/state",
                 "value_template": "{{ value_json.state }}",
-                "availability_topic": "homeassistant/sensor/anycubic_printer_connectivity/availability",
-                "json_attributes_topic": "homeassistant/sensor/anycubic_printer_connectivity/state",
+                "availability_topic": f"homeassistant/sensor/{topic_prefix}_connectivity/availability",
+                "json_attributes_topic": f"homeassistant/sensor/{topic_prefix}_connectivity/state",
                 "icon": "mdi:network",
                 "device": device_info,
             }
 
             # Publish configuration
             self.ha_client.publish(
-                "homeassistant/sensor/anycubic_printer_connectivity/config",
+                f"homeassistant/sensor/{topic_prefix}_connectivity/config",
                 json.dumps(connectivity_config),
                 retain=True,
             )
 
             # Mark entity as available
             self.ha_client.publish(
-                "homeassistant/sensor/anycubic_printer_connectivity/availability",
+                f"homeassistant/sensor/{topic_prefix}_connectivity/availability",
                 "online",
                 retain=True,
             )
@@ -930,26 +939,36 @@ class AnycubicMqttBridge:
         else:
             self.snapshot_enabled.clear()
 
+        # Get the topic prefix once
+        topic_prefix = self.get_topic_prefix()
+
         while running and self.stream_url:
             try:
+                # Only process if snapshots are enabled
+                if not self.snapshot_enabled.is_set():
+                    time.sleep(1)
+                    continue
+
                 image_data = self.take_snapshot()
 
                 if image_data:
-                    # Publish snapshot as raw binary data
+                    # Publish snapshot as raw binary data with prefix
                     self.ha_client.publish(
-                        "homeassistant/image/anycubic_printer_snapshot/image",
+                        f"homeassistant/image/{topic_prefix}_snapshot/image",
                         image_data,
                         retain=True,
                     )
 
-                    # Publish state update (timestamp)
+                    # Publish state update (timestamp) with prefix
                     self.ha_client.publish(
-                        "homeassistant/image/anycubic_printer_snapshot/state",
+                        f"homeassistant/image/{topic_prefix}_snapshot/state",
                         time.strftime("%Y-%m-%d %H:%M:%S"),
                         retain=True,
                     )
 
-                    logger.info("Published snapshot to Home Assistant")
+                    logger.info(
+                        f"Published snapshot to Home Assistant with prefix {topic_prefix}"
+                    )
             except Exception as e:
                 logger.error(f"Error in snapshot worker: {e}")
 
@@ -969,22 +988,26 @@ class AnycubicMqttBridge:
 
     def _create_light_entity(self):
         """Create a light entity in Home Assistant for printer light control"""
-        # Basic printer device info
+        # Get topic prefix for this printer
+        topic_prefix = self.get_topic_prefix()
+
+        # Basic printer device info with unique identifier
+        device_id = self.printer_cn if self.printer_cn else "anycubic_printer"
         device_info = {
-            "identifiers": ["anycubic_printer"],
+            "identifiers": [device_id],
             "name": getattr(self, "printer_model", "Anycubic Printer"),
             "model": getattr(self, "printer_model", "Unknown"),
             "manufacturer": "Anycubic",
         }
 
-        # Light entity configuration
+        # Light entity configuration with dynamic topic prefix
         light_config = {
             "name": "Printer Light",
-            "unique_id": "anycubic_printer_light",
-            "state_topic": "homeassistant/light/anycubic_printer_light/state",
-            "command_topic": "homeassistant/light/anycubic_printer_light/set",
-            "brightness_state_topic": "homeassistant/light/anycubic_printer_light/brightness",
-            "brightness_command_topic": "homeassistant/light/anycubic_printer_light/brightness/set",
+            "unique_id": f"{topic_prefix}_light",
+            "state_topic": f"homeassistant/light/{topic_prefix}_light/state",
+            "command_topic": f"homeassistant/light/{topic_prefix}_light/set",
+            "brightness_state_topic": f"homeassistant/light/{topic_prefix}_light/brightness",
+            "brightness_command_topic": f"homeassistant/light/{topic_prefix}_light/brightness/set",
             "brightness_scale": 255,
             "on_command_type": "brightness",
             "payload_on": "ON",
@@ -996,24 +1019,26 @@ class AnycubicMqttBridge:
 
         # Publish light entity configuration
         self.ha_client.publish(
-            "homeassistant/light/anycubic_printer_light/config",
+            f"homeassistant/light/{topic_prefix}_light/config",
             json.dumps(light_config),
             retain=True,
         )
-        logger.info("Created printer light entity in Home Assistant")
+        logger.info(
+            f"Created printer light entity in Home Assistant with prefix {topic_prefix}"
+        )
 
-        # Subscribe to command topics
-        self.ha_client.subscribe("homeassistant/light/anycubic_printer_light/set")
+        # Subscribe to command topics (with prefix)
+        self.ha_client.subscribe(f"homeassistant/light/{topic_prefix}_light/set")
         self.ha_client.subscribe(
-            "homeassistant/light/anycubic_printer_light/brightness/set"
+            f"homeassistant/light/{topic_prefix}_light/brightness/set"
         )
 
-        # Set up message handler for Home Assistant commands
+        # Set up message handlers for Home Assistant commands
         self.ha_client.message_callback_add(
-            "homeassistant/light/anycubic_printer_light/set", self._on_ha_light_command
+            f"homeassistant/light/{topic_prefix}_light/set", self._on_ha_light_command
         )
         self.ha_client.message_callback_add(
-            "homeassistant/light/anycubic_printer_light/brightness/set",
+            f"homeassistant/light/{topic_prefix}_light/brightness/set",
             self._on_ha_brightness_command,
         )
 
@@ -1145,9 +1170,12 @@ class AnycubicMqttBridge:
                             ):
                                 self._create_light_entity()
 
+                            # Get topic prefix for publishing
+                            topic_prefix = self.get_topic_prefix()
+
                             # Publish state to Home Assistant
                             self.ha_client.publish(
-                                "homeassistant/light/anycubic_printer_light/state",
+                                f"homeassistant/light/{topic_prefix}_light/state",
                                 "ON" if light_status == 1 else "OFF",
                                 retain=True,
                             )
@@ -1157,7 +1185,7 @@ class AnycubicMqttBridge:
                                 min(255, max(0, (light_brightness * 255) / 100))
                             )
                             self.ha_client.publish(
-                                "homeassistant/light/anycubic_printer_light/brightness",
+                                f"homeassistant/light/{topic_prefix}_light/brightness",
                                 str(brightness),
                                 retain=True,
                             )
@@ -1303,23 +1331,26 @@ class AnycubicMqttBridge:
                             }
                         )
 
-                        # Create a simple image entity for the snapshot
+                        # Create a simple image entity for the snapshot with topic prefix
+                        topic_prefix = self.get_topic_prefix()
                         image_config = {
                             "name": "Anycubic Snapshot",
-                            "unique_id": "anycubic_printer_snapshot",
-                            "state_topic": "homeassistant/image/anycubic_printer_snapshot/state",
-                            "image_topic": "homeassistant/image/anycubic_printer_snapshot/image",
+                            "unique_id": f"{topic_prefix}_snapshot",
+                            "state_topic": f"homeassistant/image/{topic_prefix}_snapshot/state",
+                            "image_topic": f"homeassistant/image/{topic_prefix}_snapshot/image",
                             "content_type": "image/jpeg",
                             "device": device_info,
                         }
 
                         # Publish image entity config
                         self.ha_client.publish(
-                            "homeassistant/image/anycubic_printer_snapshot/config",
+                            f"homeassistant/image/{topic_prefix}_snapshot/config",
                             json.dumps(image_config),
                             retain=True,
                         )
-                        logger.info("Published snapshot image entity config")
+                        logger.info(
+                            f"Published snapshot image entity config with prefix {topic_prefix}"
+                        )
 
                         # Start snapshot thread if not already running
                         if (
@@ -1343,6 +1374,7 @@ class AnycubicMqttBridge:
                         )
 
                     # Create the combined state message
+                    topic_prefix = self.get_topic_prefix()
                     state_data = {
                         "state": printer_data.get("state", "unknown"),
                         "hotbed_temp": printer_data.get("temp", {}).get(
@@ -1362,16 +1394,17 @@ class AnycubicMqttBridge:
                         "print_speed_mode": printer_data.get("print_speed_mode", 0),
                         "ip_address": printer_data.get("ip", ""),
                         "camera_url": printer_data.get("urls", {}).get("rtspUrl", ""),
+                        "printer_cn": self.printer_cn if self.printer_cn else "",
                         "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                     }
-                    # log the state data
-                    logger.info(f"State data: {state_data}")
-                    # Publish the state
+
+                    # Publish the state to the CN-specific topic
                     self.ha_client.publish(
-                        "homeassistant/sensor/anycubic_printer/state",
+                        f"homeassistant/sensor/{topic_prefix}/state",
                         json.dumps(state_data),
                         retain=True,
                     )
+                    logger.info("Published printer state data to Home Assistant")
                     logger.info("Published printer state data to Home Assistant")
                 else:
                     # Handle other types of messages
@@ -1626,7 +1659,7 @@ class AnycubicMqttBridge:
                                                 ANYCUBIC_PASS = printer_data["password"]
                                                 logger.info("Using discovered password")
 
-                                            # Extract device ID and mode ID
+                                            # Extract device ID, mode ID, and CN
                                             if "deviceId" in printer_data:
                                                 self.printer_device_id = printer_data[
                                                     "deviceId"
@@ -1649,6 +1682,13 @@ class AnycubicMqttBridge:
                                                 ]
                                                 logger.info(
                                                     f"Using discovered model name: {self.printer_model}"
+                                                )
+
+                                            # Extract and save the printer CN (serial number)
+                                            if "cn" in printer_data:
+                                                self.printer_cn = printer_data["cn"]
+                                                logger.info(
+                                                    f"Using discovered printer CN: {self.printer_cn}"
                                                 )
 
                                             # Also save the certificate and private key if needed for future use
