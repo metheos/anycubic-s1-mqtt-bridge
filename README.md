@@ -1,6 +1,6 @@
 # Anycubic S1 MQTT Bridge
 
-This project provides a bridge between Anycubic 3D printers and Home Assistant using MQTT. It allows for monitoring and controlling the printer through Home Assistant, enabling features such as printer status updates, light control, and video streaming.
+This project provides a bridge between Anycubic Kobra S1 3D printers and Home Assistant using MQTT. It allows for monitoring and controlling the printer through Home Assistant, enabling features such as printer status updates, light control, and video streaming.
 
 ## Table of Contents
 
@@ -16,7 +16,7 @@ This project provides a bridge between Anycubic 3D printers and Home Assistant u
 1. Clone the repository:
 
    ```
-   git clone https://github.com/yourusername/anycubic-s1-mqtt-bridge.git
+   git clone https://github.com/metheos/anycubic-s1-mqtt-bridge.git
    cd anycubic-s1-mqtt-bridge
    ```
 
@@ -44,10 +44,10 @@ The application uses environment variables for configuration. You can set the fo
 - `ANYCUBIC_S1_IP`: Your S1 IP
 - `HA_BROKER`: Your.HomeAssistant.MQTT.Address
 - `HA_PORT`: 1883
-- `HA_USER`: Your Home Assistant username.
-- `HA_PASS`: Your Home Assistant password.
-- `SNAPSHOT_INTERVAL_IDLE`: Interval for taking snapshots when idle.
-- `SNAPSHOT_INTERVAL_BUSY`: Interval for taking snapshots when busy.
+- `HA_USER`: Your Home Assistant MQTT username.
+- `HA_PASS`: Your Home Assistant MQTT password.
+- `SNAPSHOT_INTERVAL_IDLE`: Interval for taking snapshots when printer is idle.
+- `SNAPSHOT_INTERVAL_BUSY`: Interval for taking snapshots when printer is busy.
 - `INFO_UPDATE_INTERVAL`: Interval for updating printer information.
 
 ## Docker Setup
@@ -70,7 +70,3 @@ This will start the application in a Docker container, allowing for easy deploym
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request for any improvements or bug fixes.
-
-## License
-
-This project is licensed under the MIT License. See the LICENSE file for more details.
