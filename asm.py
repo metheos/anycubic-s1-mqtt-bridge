@@ -1219,6 +1219,18 @@ class AnycubicMqttBridge:
                     # Create individual sensors
                     sensors = []
 
+                    # CN Sensor
+                    sensors.append(
+                        {
+                            "name": "Printer CN",
+                            "unique_id": "anycubic_printer_cn",
+                            "state_topic": "homeassistant/sensor/anycubic_printer/state",
+                            "value_template": "{{ value_json.printer_cn }}",
+                            "icon": "mdi:ip-network",
+                            "device": device_info,
+                        }
+                    )
+
                     # State sensor
                     if "state" in printer_data:
                         sensors.append(
