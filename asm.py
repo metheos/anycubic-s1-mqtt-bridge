@@ -468,6 +468,110 @@ class AnycubicMqttBridge:
             logger.error(f"Error subscribing to Anycubic topics: {e}")
             return False
 
+    def _query_light_status(self):
+        """Request light status from printer"""
+
+        if not self.printer_mode_id or not self.printer_device_id:
+
+            logger.warning("Cannot query light: Missing printer mode ID or device ID")
+
+            return False
+
+        try:
+
+            import uuid
+
+            # Create message ID
+
+            message_id = str(uuid.uuid4())
+
+            # Format the topic
+
+            topic = f"anycubic/anycubicCloud/v1/web/printer/{self.printer_mode_id}/{self.printer_device_id}/light"
+
+            # Create request payload
+
+            light_request = {
+                "type": "light",
+                "action": "query",
+                "timestamp": int(time.time() * 1000),
+                "msgid": message_id,
+                "data": None,
+            }
+
+            # Send the request
+
+            logger.info("Requesting printer light status")
+
+            self.anycubic_client.publish(topic, json.dumps(light_request))
+
+            return True
+
+        except Exception as e:
+
+            logger.error(f"Error querying printer light: {e}")
+
+            return False
+
+    def request_printer_info(self):
+        """Request printer information"""
+
+        import uuid
+
+        # Validate we have required parameters
+
+        if not self.printer_device_id or not self.printer_mode_id:
+
+            logger.error("Cannot request printer info: Missing device ID or mode ID")
+
+            return
+
+        # Create a message ID
+
+        message_id = str(uuid.uuid4())
+
+        # Create request payload
+
+        info_request = {
+            "type": "info",
+            "action": "query",
+            "timestamp": int(time.time() * 1000),  # Current time in milliseconds
+            "msgid": message_id,
+            "data": None,
+        }
+
+        # Use the discovered values for the topic
+
+        topic = f"anycubic/anycubicCloud/v1/web/printer/{self.printer_mode_id}/{self.printer_device_id}/info"
+
+        logger.info(
+            f"Requesting printer information with topic: {topic}, message ID: {message_id}"
+        )
+
+        self.anycubic_client.publish(topic, json.dumps(info_request))
+
+        # Create a message ID
+
+        message_id_light = str(uuid.uuid4())
+
+        # Create request payload
+
+        info_request_light = {
+            "type": "light",
+            "action": "query",
+            "timestamp": int(time.time() * 1000),  # Current time in milliseconds
+            "msgid": message_id_light,
+            "data": None,
+        }
+
+        topic_light = f"anycubic/anycubicCloud/v1/web/printer/{self.printer_mode_id}/{self.printer_device_id}/light"
+
+        logger.info(
+            f"Requesting printer light information with topic: {topic_light}, message ID: {message_id_light}"
+        )
+
+        self.anycubic_client.publish(topic_light, json.dumps(info_request_light))
+
     def on_anycubic_disconnect(self, client, userdata, rc):
         """Handle disconnection from Anycubic broker"""
         logger.warning(f"Disconnected from Anycubic broker with code {rc}")
