@@ -1176,8 +1176,8 @@ class AnycubicMqttBridge:
                         sensors.append(
                             {
                                 "name": "Printer State",
-                                "unique_id": "anycubic_printer_state",
-                                "state_topic": "homeassistant/sensor/anycubic_printer/state",
+                                "unique_id": f"{topic_prefix}_printer_state",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
                                 "value_template": "{{ value_json.state }}",
                                 "icon": "mdi:printer-3d",
                                 "device": device_info,
@@ -1190,8 +1190,8 @@ class AnycubicMqttBridge:
                         sensors.append(
                             {
                                 "name": "Hotbed Temperature",
-                                "unique_id": "anycubic_hotbed_temp",
-                                "state_topic": "homeassistant/sensor/anycubic_printer/state",
+                                "unique_id": f"{topic_prefix}_hotbed_temp",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
                                 "value_template": "{{ value_json.hotbed_temp }}",
                                 "unit_of_measurement": "°C",
                                 "device_class": "temperature",
@@ -1204,8 +1204,8 @@ class AnycubicMqttBridge:
                         sensors.append(
                             {
                                 "name": "Nozzle Temperature",
-                                "unique_id": "anycubic_nozzle_temp",
-                                "state_topic": "homeassistant/sensor/anycubic_printer/state",
+                                "unique_id": f"{topic_prefix}_nozzle_temp",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
                                 "value_template": "{{ value_json.nozzle_temp }}",
                                 "unit_of_measurement": "°C",
                                 "device_class": "temperature",
@@ -1219,8 +1219,8 @@ class AnycubicMqttBridge:
                         sensors.append(
                             {
                                 "name": "Fan Speed",
-                                "unique_id": "anycubic_fan_speed",
-                                "state_topic": "homeassistant/sensor/anycubic_printer/state",
+                                "unique_id": f"{topic_prefix}_fan_speed",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
                                 "value_template": "{{ value_json.fan_speed_pct }}",
                                 "unit_of_measurement": "%",
                                 "icon": "mdi:fan",
@@ -1232,8 +1232,8 @@ class AnycubicMqttBridge:
                         sensors.append(
                             {
                                 "name": "Aux Fan Speed",
-                                "unique_id": "anycubic_aux_fan_speed",
-                                "state_topic": "homeassistant/sensor/anycubic_printer/state",
+                                "unique_id": f"{topic_prefix}_aux_fan_speed",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
                                 "value_template": "{{ value_json.aux_fan_speed_pct }}",
                                 "unit_of_measurement": "%",
                                 "icon": "mdi:fan",
@@ -1246,8 +1246,8 @@ class AnycubicMqttBridge:
                         sensors.append(
                             {
                                 "name": "Print Speed Mode",
-                                "unique_id": "anycubic_print_speed_mode",
-                                "state_topic": "homeassistant/sensor/anycubic_printer/state",
+                                "unique_id": f"{topic_prefix}_print_speed_mode",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
                                 "value_template": "{{ value_json.print_speed_mode }}",
                                 "icon": "mdi:speedometer",
                                 "device": device_info,
@@ -1259,8 +1259,8 @@ class AnycubicMqttBridge:
                         sensors.append(
                             {
                                 "name": "Printer IP Address",
-                                "unique_id": "anycubic_printer_ip",
-                                "state_topic": "homeassistant/sensor/anycubic_printer/state",
+                                "unique_id": f"{topic_prefix}_printer_ip",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
                                 "value_template": "{{ value_json.ip_address }}",
                                 "icon": "mdi:ip-network",
                                 "device": device_info,
@@ -1271,19 +1271,20 @@ class AnycubicMqttBridge:
                     if "urls" in printer_data and "rtspUrl" in printer_data["urls"]:
                         self.stream_url = printer_data["urls"]["rtspUrl"]
 
+
                         # Add a URL sensor
                         sensors.append(
                             {
                                 "name": "Printer Camera URL",
-                                "unique_id": "anycubic_printer_camera_url",
-                                "state_topic": "homeassistant/sensor/anycubic_printer/state",
+                                "unique_id": f"{topic_prefix}_printer_camera_url",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
                                 "value_template": "{{ value_json.camera_url }}",
                                 "icon": "mdi:cctv",
                                 "device": device_info,
                             }
                         )
 
-                        # Create a simple image entity for the snapshot with topic prefix
+                        # Create a simple image entity for the snapshot
                         topic_prefix = self.get_topic_prefix()
                         image_config = {
                             "name": "Anycubic Snapshot",
