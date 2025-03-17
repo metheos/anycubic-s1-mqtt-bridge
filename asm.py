@@ -69,11 +69,25 @@ class AnycubicMqttBridge:
         self.anycubic_client = None
         self.ha_client = None
         self.stream_url = None
-        self.snapshot_interval = int(get_required_env("SNAPSHOT_INTERVAL", "60"))
+
+        # Different snapshot intervals based on printer state
+        self.snapshot_interval_idle = int(
+            get_required_env("SNAPSHOT_INTERVAL_IDLE", "300")
+        )  # 5 minutes when idle
+        self.snapshot_interval_busy = int(
+            get_required_env("SNAPSHOT_INTERVAL_BUSY", "30")
+        )  # 30 seconds when printing/etc
+        self.snapshot_interval = (
+            self.snapshot_interval_idle
+        )  # Default to idle interval initially
+
         self.info_update_interval = int(get_required_env("INFO_UPDATE_INTERVAL", "30"))
         self.snapshot_thread = None
         self.info_thread = None
         self.connection_monitor_thread = None
+        self.printer_state = "unknown"  # Track the printer state
+
+        # Rest of the initialization remains the same...
 
         # Connection state tracking
         self.ha_connection_state = ConnectionState.DISCONNECTED
@@ -845,13 +859,35 @@ class AnycubicMqttBridge:
         # Get the topic prefix once
         topic_prefix = self.get_topic_prefix()
 
+        # Track the last snapshot time
+        last_snapshot_time = 0
+
         while running and self.stream_url:
             try:
-                # Only process if snapshots are enabled
-                if not self.snapshot_enabled.is_set():
+                current_time = time.time()
+
+                # Determine which interval to use based on printer state
+                if hasattr(self, "printer_state") and self.printer_state == "free":
+                    current_interval = self.snapshot_interval_idle
+                else:
+                    current_interval = self.snapshot_interval_busy
+
+                # Skip if snapshots are disabled for this state (interval = 0)
+                if current_interval == 0:
+                    time.sleep(1)  # Sleep a short time before checking again
+                    continue
+
+                # Only process if snapshots are enabled and enough time has passed
+                if (
+                    not self.snapshot_enabled.is_set()
+                    or (current_time - last_snapshot_time) < current_interval
+                ):
                     time.sleep(1)
                     continue
 
+                logger.info(
+                    f"Taking snapshot (state: {getattr(self, 'printer_state', 'unknown')}, interval: {current_interval}s)"
+                )
                 image_data = self.take_snapshot()
 
                 if image_data:
@@ -872,11 +908,18 @@ class AnycubicMqttBridge:
                     logger.info(
                         f"Published snapshot to Home Assistant with prefix {topic_prefix}"
                     )
+                    last_snapshot_time = current_time
+                else:
+                    logger.warning("Failed to capture snapshot")
+                    # Wait a shorter time before retry on failure
+                    time.sleep(min(current_interval / 3, 10))
+                    continue
             except Exception as e:
                 logger.error(f"Error in snapshot worker: {e}")
+                time.sleep(5)  # Wait a bit on error before trying again
 
-            # Sleep until next snapshot
-            time.sleep(self.snapshot_interval)
+            # Sleep a short time to prevent high CPU usage (we'll check again in 1 second)
+            time.sleep(1)
 
     def info_update_worker(self):
         """Background worker that periodically requests printer information"""
@@ -1289,6 +1332,12 @@ class AnycubicMqttBridge:
 
                     # Create the combined state message
                     topic_prefix = self.get_topic_prefix()
+
+                    # Save the printer state for the snapshot worker
+                    if "state" in printer_data:
+                        self.printer_state = printer_data["state"]
+                        logger.debug(f"Updated printer state: {self.printer_state}")
+
                     state_data = {
                         "state": printer_data.get("state", "unknown"),
                         "hotbed_temp": printer_data.get("temp", {}).get(
