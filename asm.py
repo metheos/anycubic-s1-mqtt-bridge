@@ -1436,6 +1436,56 @@ class AnycubicMqttBridge:
                     except Exception as e:
                         logger.error(f"Error processing temperature data: {e}")
                         logger.debug(traceback.format_exc())
+
+                elif "type" in data and data["type"] == "print":
+                    logger.info(f"Received print job report: action={data.get('action', 'unknown')}, state={data.get('state', 'unknown')}")
+                    try:
+                        if "data" in data and data["data"]:
+                            print_data = data["data"]
+                            
+                            # Save the print data for future use
+                            if not hasattr(self, "latest_print_data"):
+                                self.latest_print_data = {}
+                            
+                            # Update our stored print data
+                            self.latest_print_data.update(print_data)
+                            
+                            # Create/update print sensors if not already created
+                            if not hasattr(self, "print_sensors_created") or not self.print_sensors_created:
+                                self._create_print_sensors()
+                            
+                            # Get topic prefix for publishing
+                            topic_prefix = self.get_topic_prefix()
+                            
+                            # Create a state update with print job information
+                            print_state = {
+                                "filename": print_data.get("filename", ""),
+                                "progress": print_data.get("progress", 0),
+                                "current_layer": print_data.get("curr_layer", 0),
+                                "total_layers": print_data.get("total_layers", 0),
+                                "print_time": print_data.get("print_time", 0),
+                                "remaining_time": print_data.get("remain_time", 0),
+                                "material_usage": print_data.get("supplies_usage", 0),
+                                "state": data.get("state", "unknown"),
+                                "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            }
+                            
+                            # Publish print job data to Home Assistant
+                            self.ha_client.publish(
+                                f"homeassistant/sensor/{topic_prefix}/print_job",
+                                json.dumps(print_state),
+                                retain=True
+                            )
+                            
+                            logger.debug(f"Published print job update: {json.dumps(print_state)}")
+                            
+                            # If we receive a completion message, clear the print job data
+                            if data.get("state") == "done":
+                                logger.info("Print job completed")
+
+                    except Exception as e:
+                        logger.error(f"Error processing print job data: {e}")
+                        logger.debug(traceback.format_exc())
                 else:
                     # Handle other types of messages
                     topic_parts = msg.topic.split("/")
@@ -1465,6 +1515,85 @@ class AnycubicMqttBridge:
             import traceback
 
             logger.error(traceback.format_exc())
+            
+    def _create_print_sensors(self):
+        """Create print job related sensors in Home Assistant"""
+        # Get topic prefix and device info
+        topic_prefix = self.get_topic_prefix()
+        device_info = self.get_device_info()
+        
+        # List of print sensors to create
+        sensors = [
+            {
+                "name": "Print Filename",
+                "unique_id": f"{topic_prefix}_print_filename",
+                "state_topic": f"homeassistant/sensor/{topic_prefix}/print_job",
+                "value_template": "{{ value_json.filename }}",
+                "icon": "mdi:file-document",
+                "device": device_info,
+            },
+            {
+                "name": "Print Progress",
+                "unique_id": f"{topic_prefix}_print_progress",
+                "state_topic": f"homeassistant/sensor/{topic_prefix}/print_job",
+                "value_template": "{{ value_json.progress }}",
+                "unit_of_measurement": "%",
+                "icon": "mdi:progress-check",
+                "device": device_info,
+            },
+            {
+                "name": "Print Layer",
+                "unique_id": f"{topic_prefix}_print_layer",
+                "state_topic": f"homeassistant/sensor/{topic_prefix}/print_job",
+                "value_template": "{{ value_json.current_layer }} / {{ value_json.total_layers }}",
+                "icon": "mdi:layers",
+                "device": device_info,
+            },
+            {
+                "name": "Print Time Elapsed",
+                "unique_id": f"{topic_prefix}_print_time",
+                "state_topic": f"homeassistant/sensor/{topic_prefix}/print_job",
+                "value_template": "{{ value_json.print_time }}",
+                "unit_of_measurement": "min",
+                "icon": "mdi:clock-time-four",
+                "device": device_info,
+            },
+            {
+                "name": "Print Time Remaining",
+                "unique_id": f"{topic_prefix}_print_remaining",
+                "state_topic": f"homeassistant/sensor/{topic_prefix}/print_job",
+                "value_template": "{{ value_json.remaining_time }}",
+                "unit_of_measurement": "min",
+                "icon": "mdi:clock-time-eight",
+                "device": device_info,
+            },
+            {
+                "name": "Material Usage",
+                "unique_id": f"{topic_prefix}_material_usage",
+                "state_topic": f"homeassistant/sensor/{topic_prefix}/print_job",
+                "value_template": "{{ value_json.material_usage }}",
+                "unit_of_measurement": "mm",
+                "icon": "mdi:printer-3d-nozzle",
+                "device": device_info,
+            },
+            {
+                "name": "Print State",
+                "unique_id": f"{topic_prefix}_print_state",
+                "state_topic": f"homeassistant/sensor/{topic_prefix}/print_job",
+                "value_template": "{{ value_json.state }}",
+                "icon": "mdi:printer-3d",
+                "device": device_info,
+            },
+        ]
+        
+        # Publish all sensor configurations
+        for sensor in sensors:
+            discovery_topic = f"homeassistant/sensor/{sensor['unique_id']}/config"
+            self.ha_client.publish(discovery_topic, json.dumps(sensor), retain=True)
+        
+        # Mark sensors as created
+        self.print_sensors_created = True
+        logger.info("Created print job sensors in Home Assistant")
 
     def generate_sign(self, token, ts, nonce):
         """
