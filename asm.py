@@ -727,208 +727,107 @@ class AnycubicMqttBridge:
             logger.error(f"Error starting video capture: {e}")
             return False
 
-    def check_stream_availability(self):
-        """Check if the video stream is available by directly checking the URL"""
-        if not self.stream_url:
-            logger.warning("No stream URL available to check")
-            return False
-
-        logger.info(f"Checking stream availability: {self.stream_url}")
-
-        try:
-            # Handle different stream types
-            if self.stream_url.startswith(("http://", "https://")):
-                # For FLV streams, do a more thorough check using ffprobe
-                if self.stream_url.endswith(".flv") or "/flv" in self.stream_url:
-                    try:
-                        import subprocess
-
-                        # Use ffprobe with strict timeout to check if stream has video data
-                        cmd = [
-                            "ffprobe",
-                            "-v",
-                            "error",
-                            "-select_streams",
-                            "v:0",  # Only check video stream
-                            "-show_entries",
-                            "stream=codec_type",
-                            "-of",
-                            "csv=p=0",
-                            "-timeout",
-                            "3000000",  # 3 second timeout in microseconds
-                            self.stream_url,
-                        ]
-
-                        result = subprocess.run(
-                            cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            timeout=5,
-                        )
-
-                        # Check if we got "video" in the output
-                        output = result.stdout.decode("utf-8").strip()
-                        available = "video" in output and result.returncode == 0
-
-                        logger.info(
-                            f"FLV stream data check result: {available} (output: {output})"
-                        )
-                        return available
-                    except subprocess.TimeoutExpired:
-                        logger.warning("FLV stream check timed out - no active video")
-                        return False
-                    except FileNotFoundError:
-                        logger.warning(
-                            "ffprobe not available, falling back to basic HTTP check"
-                        )
-                        # Fall through to basic HTTP check
-
-                # Basic HTTP check for non-FLV streams or if ffprobe failed
-                response = requests.head(self.stream_url, timeout=3)
-                available = response.status_code < 400
-                logger.info(
-                    f"HTTP stream check result: {available} (status code: {response.status_code})"
-                )
-                return available
-
-            elif self.stream_url.startswith("rtsp://"):
-                # For RTSP streams, try using ffmpeg
-                import subprocess
-
-                # Use ffprobe to check stream
-                cmd = [
-                    "ffprobe",
-                    "-v",
-                    "quiet",
-                    "-print_format",
-                    "json",
-                    "-show_streams",
-                    "-i",
-                    self.stream_url,
-                    "-timeout",
-                    "3000000",  # 3 second timeout in microseconds
-                ]
-
-                try:
-                    result = subprocess.run(
-                        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5
-                    )
-                    available = result.returncode == 0
-                    logger.info(f"RTSP stream check result: {available}")
-                    return available
-                except subprocess.TimeoutExpired:
-                    logger.warning("RTSP stream check timed out")
-                    return False
-                except FileNotFoundError:
-                    logger.warning(
-                        "ffprobe not available, falling back to video capture attempt"
-                    )
-                    # Just return True to force a capture attempt
-                    return False
-
-            # For other URL types, just assume it's available
-            logger.warning(
-                f"Unknown stream type: {self.stream_url}, assuming available"
-            )
-            return True
-
-        except Exception as e:
-            logger.error(f"Error checking stream availability: {e}")
-            return False
-
     def take_snapshot(self):
         """Capture a snapshot from the camera stream"""
         if not self.stream_url:
             logger.warning("No camera stream URL available for snapshot")
             return None
 
-        # Check if the stream is available
-        stream_available = self.check_stream_availability()
-
-        # Start video capture if needed
-        if not stream_available:
-            logger.info("Stream not available, starting video capture")
-            if not self.start_video_capture():
-                logger.warning("Video capture start failed, skipping snapshot")
-                return None
-        else:
-            logger.info("Stream is available, proceeding with snapshot")
-
         try:
+            # First try to take a snapshot directly without starting video capture
             logger.info(f"Taking snapshot from {self.stream_url}")
+            image_data = self._capture_snapshot_with_ffmpeg()
 
-            # Check if it's an FLV stream
-            if self.stream_url.endswith(".flv") or "/flv" in self.stream_url:
-                # Try to use ffmpeg to get a snapshot (if installed)
-                try:
-                    import subprocess
-                    import tempfile
+            # If snapshot successful, return it
+            if image_data:
+                return image_data
 
-                    # Create a temporary file for the snapshot
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".jpg", delete=False
-                    ) as temp_file:
-                        temp_path = temp_file.name
-
-                    # Use ffmpeg to capture a single frame from the stream
-                    # -y: Overwrite output files without asking
-                    # -i: Input file
-                    # -vframes 1: Extract just one video frame
-                    # -q:v 2: Set quality (2 is high quality, lower number is better)
-                    # Use ffmpeg with additional parameters to handle slow streams
-                    ffmpeg_cmd = [
-                        "ffmpeg",
-                        "-y",  # Overwrite output without asking
-                        "-timeout",
-                        "5000000",  # 5 second connection timeout in microseconds
-                        "-analyzeduration",
-                        "1000000",  # Analyze only 1 second of stream
-                        "-probesize",
-                        "1000000",  # Use small probe size
-                        "-i",
-                        self.stream_url,
-                        "-vframes",
-                        "1",  # Extract just one video frame
-                        "-q:v",
-                        "2",  # High quality
-                        temp_path,
-                    ]
-
-                    logger.debug(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
-                    result = subprocess.run(
-                        ffmpeg_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        timeout=7,  # Set a reasonable timeout
-                    )
-
-                    if result.returncode == 0:
-                        # Read the captured image
-                        with open(temp_path, "rb") as img_file:
-                            image_data = img_file.read()
-
-                        # Clean up temp file
-                        try:
-                            os.unlink(temp_path)
-                        except Exception as e:
-                            logger.error(f"Error cleaning up temp file: {e}")
-                            pass
-
-                        logger.info("Successfully captured frame with ffmpeg")
-                        return image_data
-                    else:
-                        logger.error(f"ffmpeg failed: {result.stderr.decode()}")
-
-                except (ImportError, FileNotFoundError) as e:
-                    logger.warning(
-                        f"Could not use ffmpeg: {e}. Falling back to HTTP request."
-                    )
-                except Exception as e:
-                    logger.error(f"Error using ffmpeg: {e}")
-                    logger.debug(traceback.format_exc())
+            # If snapshot failed, try starting video capture
+            logger.info("Direct snapshot failed, attempting to start video capture")
+            if self.start_video_capture():
+                logger.info("Video capture started, trying snapshot again")
+                # Small delay to let video initialization complete
+                time.sleep(1)
+                # Try again after starting video capture
+                return self._capture_snapshot_with_ffmpeg()
+            else:
+                logger.error(
+                    "Failed to start video capture and snapshot attempt failed"
+                )
+                return None
 
         except Exception as e:
             logger.error(f"Error taking snapshot: {e}")
+            logger.debug(traceback.format_exc())
+            return None
+
+    def _capture_snapshot_with_ffmpeg(self):
+        """Internal method to capture a snapshot using ffmpeg"""
+        try:
+            import subprocess
+            import tempfile
+            import os
+
+            # Check if it's an FLV stream
+            if self.stream_url.endswith(".flv") or "/flv" in self.stream_url:
+                # Create a temporary file for the snapshot
+                with tempfile.NamedTemporaryFile(
+                    suffix=".jpg", delete=False
+                ) as temp_file:
+                    temp_path = temp_file.name
+
+                # Use ffmpeg to capture a single frame from the stream
+                ffmpeg_cmd = [
+                    "ffmpeg",
+                    "-y",  # Overwrite output without asking
+                    "-timeout",
+                    "5000000",  # 5 second connection timeout in microseconds
+                    "-analyzeduration",
+                    "1000000",  # Analyze only 1 second of stream
+                    "-probesize",
+                    "1000000",  # Use small probe size
+                    "-i",
+                    self.stream_url,
+                    "-vframes",
+                    "1",  # Extract just one video frame
+                    "-q:v",
+                    "2",  # High quality
+                    temp_path,
+                ]
+
+                logger.debug(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
+                result = subprocess.run(
+                    ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=7,  # Set a reasonable timeout
+                )
+
+                if result.returncode == 0:
+                    # Read the captured image
+                    with open(temp_path, "rb") as img_file:
+                        image_data = img_file.read()
+
+                    # Clean up temp file
+                    try:
+                        os.unlink(temp_path)
+                    except Exception as e:
+                        logger.error(f"Error cleaning up temp file: {e}")
+
+                    logger.info("Successfully captured frame with ffmpeg")
+                    return image_data
+                else:
+                    logger.warning(f"ffmpeg failed: {result.stderr.decode()}")
+                    return None
+
+            # Add support for other stream types if needed
+            return None
+
+        except (ImportError, FileNotFoundError) as e:
+            logger.warning(f"Could not use ffmpeg: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error using ffmpeg: {e}")
             logger.debug(traceback.format_exc())
             return None
 
@@ -1219,17 +1118,20 @@ class AnycubicMqttBridge:
                     # Create individual sensors
                     sensors = []
 
-                    # CN Sensor
-                    sensors.append(
-                        {
-                            "name": "Printer CN",
-                            "unique_id": "anycubic_printer_cn",
-                            "state_topic": "homeassistant/sensor/anycubic_printer/state",
-                            "value_template": "{{ value_json.printer_cn }}",
-                            "icon": "mdi:ip-network",
-                            "device": device_info,
-                        }
-                    )
+                    # Add Serial Number (CN) sensor
+                    if self.printer_cn:
+                        # Use prefix for consistency
+                        topic_prefix = self.get_topic_prefix()
+                        sensors.append(
+                            {
+                                "name": "Printer Serial Number",
+                                "unique_id": f"{topic_prefix}_serial_number",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
+                                "value_template": "{{ value_json.printer_cn }}",
+                                "icon": "mdi:barcode",
+                                "device": device_info,
+                            }
+                        )
 
                     # State sensor
                     if "state" in printer_data:
