@@ -15,7 +15,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    entrypoint: ["/bin/sh", "-c", "service avahi-daemon start && python asm.py"]
+    entrypoint: ["/bin/sh", "-c", "service dbus start && service avahi-daemon start && python asm.py"]
 
 networks:
   mqtt-network:
