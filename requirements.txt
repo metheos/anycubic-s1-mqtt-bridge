@@ -1,0 +1,4 @@
+paho-mqtt
+python-dotenv
+requests
+pycryptodome
