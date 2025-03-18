@@ -1690,7 +1690,7 @@ class AnycubicMqttBridge:
         """Handle cancel print button press from Home Assistant"""
         try:
             logger.info("Received cancel print command from Home Assistant")
-            self._send_print_command("cancel")
+            self._send_print_command("stop")
         except Exception as e:
             logger.error(f"Error processing cancel print command: {e}")
     
