@@ -553,19 +553,14 @@ class AnycubicMqttBridge:
         import uuid
 
         # Validate we have required parameters
-
         if not self.printer_device_id or not self.printer_mode_id:
-
             logger.error("Cannot request printer info: Missing device ID or mode ID")
-
             return
 
         # Create a message ID
-
         message_id = str(uuid.uuid4())
 
         # Create request payload
-
         info_request = {
             "type": "info",
             "action": "query",
@@ -575,7 +570,6 @@ class AnycubicMqttBridge:
         }
 
         # Use the discovered values for the topic
-
         topic = f"anycubic/anycubicCloud/v1/web/printer/{self.printer_mode_id}/{self.printer_device_id}/info"
 
         logger.info(
@@ -584,12 +578,10 @@ class AnycubicMqttBridge:
 
         self.anycubic_client.publish(topic, json.dumps(info_request))
 
-        # Create a message ID
-
+        # Create a message ID for light request
         message_id_light = str(uuid.uuid4())
 
         # Create request payload
-
         info_request_light = {
             "type": "light",
             "action": "query",
@@ -605,6 +597,26 @@ class AnycubicMqttBridge:
         )
 
         self.anycubic_client.publish(topic_light, json.dumps(info_request_light))
+
+        # Create a message ID for multicolor box request
+        message_id_box = str(uuid.uuid4())
+
+        # Create request payload for multicolor box
+        info_request_box = {
+            "type": "multiColorBox",
+            "action": "getInfo",
+            "timestamp": int(time.time() * 1000),  # Current time in milliseconds
+            "msgid": message_id_box,
+            "data": None,
+        }
+
+        topic_box = f"anycubic/anycubicCloud/v1/web/printer/{self.printer_mode_id}/{self.printer_device_id}/multiColorBox"
+
+        logger.info(
+            f"Requesting multicolor box information with topic: {topic_box}, message ID: {message_id_box}"
+        )
+
+        self.anycubic_client.publish(topic_box, json.dumps(info_request_box))
 
     def on_anycubic_disconnect(self, client, userdata, rc):
         """Handle disconnection from Anycubic broker"""
