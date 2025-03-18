@@ -67,6 +67,21 @@ To run the application using Docker, you can use the provided `Dockerfile` and `
 
 This will start the application in a Docker container, allowing for easy deployment and management.
 
+## Home Assistant Integration
+
+The repository includes an example Home Assistant view configuration that you can use to monitor your Anycubic printer:
+
+![Home Assistant View Example](HA_Example.PNG)
+
+To use this view:
+
+1. Copy the content from the [home_assistant_view_example.yaml](home_assistant_view_example.yaml) file
+2. Paste it into the view yaml editor and click **Save**
+
+This view uses elements from https://github.com/piitaya/lovelace-mushroom for the AMS spool visualization.
+
+You may need to adjust entity IDs to match the ones created by your specific printer.
+
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request for any improvements or bug fixes.
