@@ -8,8 +8,8 @@ This project provides a bridge between Anycubic Kobra S1 3D printers and Home As
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [Docker Setup](#docker-setup)
+- [Home Assistant Integration](#home-assistant-integration)
 - [Contributing](#contributing)
-- [License](#license)
 
 ## Installation
 
