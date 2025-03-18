@@ -1717,25 +1717,6 @@ class AnycubicMqttBridge:
                 "icon": "mdi:palette",
                 "device": device_info,
             })
-            
-            # Create light entity for color visualization
-            light_config = {
-                "name": f"Filament {i} Color",
-                "unique_id": f"{topic_prefix}_filament_{i}_color_light",
-                "state_topic": f"homeassistant/sensor/{topic_prefix}/filament_slot_{i}",
-                "value_template": "ON",
-                "rgb_state_topic": f"homeassistant/sensor/{topic_prefix}/filament_slot_{i}",
-                "rgb_value_template": "{{ value_json.color_rgb | join(',') }}",
-                "icon": "mdi:palette",
-                "device": device_info,
-            }
-            
-            # Publish light entity configuration
-            self.ha_client.publish(
-                f"homeassistant/light/{topic_prefix}_filament_{i}_color_light/config",
-                json.dumps(light_config),
-                retain=True
-            )
         
         # Publish all sensor configurations
         for sensor in sensors:
