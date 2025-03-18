@@ -475,6 +475,11 @@ class AnycubicMqttBridge:
 
             # Also request light status
             self._query_light_status()
+
+            # Create print controls
+            if not hasattr(self, "print_controls_created") or not self.print_controls_created:
+                self._create_print_controls()
+                self.print_controls_created = True
         else:
             logger.error(f"Failed to connect to Anycubic broker, return code: {rc}")
             self.anycubic_connection_state = ConnectionState.ERROR
@@ -1522,6 +1527,11 @@ class AnycubicMqttBridge:
                             # If we receive a completion message, clear the print job data
                             if data.get("state") == "done":
                                 logger.info("Print job completed")
+                            
+                            # Create print controls
+                            if not hasattr(self, "print_controls_created") or not self.print_controls_created:
+                                self._create_print_controls()
+                                self.print_controls_created = True
 
                     except Exception as e:
                         logger.error(f"Error processing print job data: {e}")
@@ -1660,6 +1670,64 @@ class AnycubicMqttBridge:
 
             logger.error(traceback.format_exc())
 
+    def _on_pause_print(self, client, userdata, msg):
+        """Handle pause print button press from Home Assistant"""
+        try:
+            logger.info("Received pause print command from Home Assistant")
+            self._send_print_command("pause")
+        except Exception as e:
+            logger.error(f"Error processing pause print command: {e}")
+    
+    def _on_resume_print(self, client, userdata, msg):
+        """Handle resume print button press from Home Assistant"""
+        try:
+            logger.info("Received resume print command from Home Assistant")
+            self._send_print_command("resume")
+        except Exception as e:
+            logger.error(f"Error processing resume print command: {e}")
+    
+    def _on_cancel_print(self, client, userdata, msg):
+        """Handle cancel print button press from Home Assistant"""
+        try:
+            logger.info("Received cancel print command from Home Assistant")
+            self._send_print_command("cancel")
+        except Exception as e:
+            logger.error(f"Error processing cancel print command: {e}")
+    
+    def _send_print_command(self, action):
+        """Send print control command to the printer"""
+        if not self.printer_mode_id or not self.printer_device_id:
+            logger.error("Cannot send print command: Missing printer device ID or mode ID")
+            return False
+
+        try:
+            import uuid
+
+            # Create message ID
+            message_id = str(uuid.uuid4())
+
+            # Format the topic
+            topic = f"anycubic/anycubicCloud/v1/web/printer/{self.printer_mode_id}/{self.printer_device_id}/print"
+
+            # Create request payload
+            print_request = {
+                "type": "print",
+                "action": action,
+                "timestamp": int(time.time() * 1000),
+                "msgid": message_id,
+                "data": None,
+            }
+
+            # Send the request
+            logger.info(f"Sending print {action} command to printer")
+            self.anycubic_client.publish(topic, json.dumps(print_request))
+            return True
+
+        except Exception as e:
+            logger.error(f"Error sending print command: {e}")
+            logger.debug(traceback.format_exc())
+            return False
+
     def _create_color_box_sensors(self):
         """Create MultiColor Box related sensors in Home Assistant"""
         # Get topic prefix and device info
@@ -1726,6 +1794,66 @@ class AnycubicMqttBridge:
         # Mark sensors as created
         self.color_box_sensors_created = True
         logger.info("Created MultiColor Box sensors in Home Assistant")
+
+    def _create_print_controls(self):
+        """Create buttons in Home Assistant to control print jobs"""
+        # Get topic prefix and device info
+        topic_prefix = self.get_topic_prefix()
+        device_info = self.get_device_info()
+        
+        # List of control buttons to create
+        buttons = [
+            {
+                "name": "Pause Print",
+                "unique_id": f"{topic_prefix}_pause_print",
+                "command_topic": f"homeassistant/button/{topic_prefix}_pause_print/command",
+                "payload_press": "PRESS",
+                "icon": "mdi:pause",
+                "device": device_info,
+            },
+            {
+                "name": "Resume Print",
+                "unique_id": f"{topic_prefix}_resume_print",
+                "command_topic": f"homeassistant/button/{topic_prefix}_resume_print/command",
+                "payload_press": "PRESS",
+                "icon": "mdi:play",
+                "device": device_info,
+            },
+            {
+                "name": "Cancel Print",
+                "unique_id": f"{topic_prefix}_cancel_print",
+                "command_topic": f"homeassistant/button/{topic_prefix}_cancel_print/command",
+                "payload_press": "PRESS",
+                "icon": "mdi:stop",
+                "device": device_info,
+            }
+        ]
+        
+        # Publish all button configurations
+        for button in buttons:
+            discovery_topic = f"homeassistant/button/{button['unique_id']}/config"
+            self.ha_client.publish(discovery_topic, json.dumps(button), retain=True)
+        
+        # Subscribe to command topics
+        self.ha_client.subscribe(f"homeassistant/button/{topic_prefix}_pause_print/command")
+        self.ha_client.subscribe(f"homeassistant/button/{topic_prefix}_resume_print/command")
+        self.ha_client.subscribe(f"homeassistant/button/{topic_prefix}_cancel_print/command")
+        
+        # Set up message handlers
+        self.ha_client.message_callback_add(
+            f"homeassistant/button/{topic_prefix}_pause_print/command", 
+            self._on_pause_print
+        )
+        self.ha_client.message_callback_add(
+            f"homeassistant/button/{topic_prefix}_resume_print/command", 
+            self._on_resume_print
+        )
+        self.ha_client.message_callback_add(
+            f"homeassistant/button/{topic_prefix}_cancel_print/command", 
+            self._on_cancel_print
+        )
+        
+        logger.info("Created print control buttons in Home Assistant")
 
     def _create_print_sensors(self):
         """Create print job related sensors in Home Assistant"""
