@@ -1639,6 +1639,49 @@ class AnycubicMqttBridge:
                     except Exception as e:
                         logger.error(f"Error processing fan data: {e}")
                         logger.debug(traceback.format_exc())
+
+                elif "type" in data and data["type"] == "file":
+                    logger.info(f"Received file report: action={data.get('action', 'unknown')}")
+                    try:
+                        if "data" in data and data["data"] and "file_details" in data["data"] and "thumbnail" in data["data"]["file_details"]:
+                            # Extract the base64 thumbnail
+                            thumbnail_base64 = data["data"]["file_details"]["thumbnail"]
+                            filename = data["data"].get("filename", "Unknown File")
+                            
+                            try:
+                                # Decode base64 to binary image data
+                                import base64
+                                thumbnail_binary = base64.b64decode(thumbnail_base64)
+                                
+                                # Create the image entity if it doesn't exist
+                                if not hasattr(self, "print_preview_created") or not self.print_preview_created:
+                                    self._create_print_preview_entity()
+                                
+                                # Get topic prefix
+                                topic_prefix = self.get_topic_prefix()
+                                
+                                # Publish the thumbnail image
+                                self.ha_client.publish(
+                                    f"homeassistant/image/{topic_prefix}_print_preview/image",
+                                    thumbnail_binary,
+                                    retain=True
+                                )
+                                
+                                # Publish state (current filename)
+                                self.ha_client.publish(
+                                    f"homeassistant/image/{topic_prefix}_print_preview/state",
+                                    filename,
+                                    retain=True
+                                )
+                                
+                                logger.info(f"Published print preview image for file: {filename}")
+                            except Exception as e:
+                                logger.error(f"Error decoding thumbnail: {e}")
+                                logger.debug(traceback.format_exc())
+                    
+                    except Exception as e:
+                        logger.error(f"Error processing file data: {e}")
+                        logger.debug(traceback.format_exc())
                         
                 else:
                     # Handle other types of messages
@@ -1854,6 +1897,33 @@ class AnycubicMqttBridge:
         )
         
         logger.info("Created print control buttons in Home Assistant")
+
+    def _create_print_preview_entity(self):
+        """Create a print preview image entity in Home Assistant"""
+        # Get topic prefix and device info
+        topic_prefix = self.get_topic_prefix()
+        device_info = self.get_device_info()
+        
+        # Create image entity configuration
+        image_config = {
+            "name": "Print Preview",
+            "unique_id": f"{topic_prefix}_print_preview",
+            "state_topic": f"homeassistant/image/{topic_prefix}_print_preview/state",
+            "image_topic": f"homeassistant/image/{topic_prefix}_print_preview/image",
+            "content_type": "image/png",
+            "device": device_info,
+        }
+        
+        # Publish entity configuration
+        self.ha_client.publish(
+            f"homeassistant/image/{topic_prefix}_print_preview/config",
+            json.dumps(image_config),
+            retain=True
+        )
+        
+        # Mark entity as created
+        self.print_preview_created = True
+        logger.info("Created print preview image entity in Home Assistant")
 
     def _create_print_sensors(self):
         """Create print job related sensors in Home Assistant"""
