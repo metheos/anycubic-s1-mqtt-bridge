@@ -69,7 +69,7 @@ This will start the application in a Docker container, allowing for easy deploym
 
 ## Home Assistant Integration
 
-The repository includes an example Home Assistant view configuration that you can use to monitor your Anycubic printer:
+The repository includes an example Home Assistant view configuration that you can use to monitor your Anycubic S1 printer:
 
 ![Home Assistant View Example](HA_Example.PNG)
 
