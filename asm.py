@@ -1066,31 +1066,35 @@ class AnycubicMqttBridge:
             topic_prefix = self.get_topic_prefix()
             device_info = self.get_device_info()
             
-            # Determine stream format (FLV, RTSP, etc.)
-            stream_type = "flv" if "/flv" in self.stream_url or self.stream_url.endswith(".flv") else "rtsp"
-            
-            # Create camera entity with WebRTC support
+            # Create camera entity configuration
             camera_config = {
                 "name": "Anycubic Camera",
                 "unique_id": f"{topic_prefix}_webrtc_camera",
-                "input": self.stream_url,
-                "extra_arguments": "-analyzeduration 1000000 -probesize 1000000",
-                "stream_source": self.stream_url,
-                "platform": "ffmpeg",  # Use ffmpeg platform for WebRTC
                 "device": device_info,
+                "topic": f"homeassistant/camera/{topic_prefix}_webrtc_camera/image",
+                # Special fields for WebRTC
+                "input_source": self.stream_url,
+                "extra_arguments": "-analyzeduration 1000000 -probesize 1000000",
+                "availability_topic": f"homeassistant/camera/{topic_prefix}_webrtc_camera/availability"
             }
+            
+            # Publish availability
+            self.ha_client.publish(
+                f"homeassistant/camera/{topic_prefix}_webrtc_camera/availability",
+                "online",
+                retain=True
+            )
             
             # Publish camera entity configuration
             self.ha_client.publish(
                 f"homeassistant/camera/{topic_prefix}_webrtc_camera/config",
                 json.dumps(camera_config),
-                retain=True,
+                retain=True
             )
             
             logger.info(f"Created WebRTC camera entity with URL: {self.stream_url}")
             self.webrtc_camera_created = True
             return True
-            
         except Exception as e:
             logger.error(f"Error creating WebRTC camera entity: {e}")
             logger.debug(traceback.format_exc())
