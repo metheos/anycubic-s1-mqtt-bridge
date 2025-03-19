@@ -7,6 +7,7 @@ sections:
   - type: grid
     cards:
       - type: picture
+        image: https://demo.home-assistant.io/stub_config/t-shirt-promo.png
         image_entity: image.anycubic_kobra_s1_anycubic_snapshot
       - show_name: false
         show_icon: true
@@ -23,6 +24,10 @@ sections:
         icon: mdi:circle
         entity: sensor.anycubic_kobra_s1_filament_0_type
         icon_color: "{{states('sensor.anycubic_kobra_s1_filament_0_color')}}"
+        badge_icon: >-
+          {{'mdi:check-bold' if
+          states('sensor.anycubic_kobra_s1_active_filament_slot') == '0'}}
+        badge_color: green
         multiline_secondary: false
         layout: vertical
         grid_options:
@@ -40,6 +45,10 @@ sections:
         icon: mdi:circle
         entity: sensor.anycubic_kobra_s1_filament_0_type
         icon_color: "{{states('sensor.anycubic_kobra_s1_filament_1_color')}}"
+        badge_icon: >-
+          {{'mdi:check-bold' if
+          states('sensor.anycubic_kobra_s1_active_filament_slot') == '1'}}
+        badge_color: green
         multiline_secondary: false
         layout: vertical
         grid_options:
@@ -57,6 +66,10 @@ sections:
         icon: mdi:circle
         entity: sensor.anycubic_kobra_s1_filament_0_type
         icon_color: "{{states('sensor.anycubic_kobra_s1_filament_2_color')}}"
+        badge_icon: >-
+          {{'mdi:check-bold' if
+          states('sensor.anycubic_kobra_s1_active_filament_slot') == '2'}}
+        badge_color: green
         multiline_secondary: false
         layout: vertical
         grid_options:
@@ -74,6 +87,10 @@ sections:
         icon: mdi:circle
         entity: sensor.anycubic_kobra_s1_filament_0_type
         icon_color: "{{states('sensor.anycubic_kobra_s1_filament_3_color')}}"
+        badge_icon: >-
+          {{'mdi:check-bold' if
+          states('sensor.anycubic_kobra_s1_active_filament_slot') == '3'}}
+        badge_color: green
         multiline_secondary: false
         layout: vertical
         grid_options:
