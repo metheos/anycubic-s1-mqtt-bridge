@@ -1054,7 +1054,48 @@ class AnycubicMqttBridge:
         except Exception as e:
             logger.error(f"Error controlling printer light: {e}")
             return False
-
+        
+    def _create_webrtc_camera_entity(self):
+        """Create a WebRTC camera entity in Home Assistant for remote access"""
+        if not self.stream_url:
+            logger.warning("Cannot create WebRTC camera entity: No stream URL available")
+            return False
+        
+        try:
+            # Get topic prefix and device info
+            topic_prefix = self.get_topic_prefix()
+            device_info = self.get_device_info()
+            
+            # Determine stream format (FLV, RTSP, etc.)
+            stream_type = "flv" if "/flv" in self.stream_url or self.stream_url.endswith(".flv") else "rtsp"
+            
+            # Create camera entity with WebRTC support
+            camera_config = {
+                "name": "Anycubic Camera",
+                "unique_id": f"{topic_prefix}_webrtc_camera",
+                "input": self.stream_url,
+                "extra_arguments": "-analyzeduration 1000000 -probesize 1000000",
+                "stream_source": self.stream_url,
+                "platform": "ffmpeg",  # Use ffmpeg platform for WebRTC
+                "device": device_info,
+            }
+            
+            # Publish camera entity configuration
+            self.ha_client.publish(
+                f"homeassistant/camera/{topic_prefix}_webrtc_camera/config",
+                json.dumps(camera_config),
+                retain=True,
+            )
+            
+            logger.info(f"Created WebRTC camera entity with URL: {self.stream_url}")
+            self.webrtc_camera_created = True
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error creating WebRTC camera entity: {e}")
+            logger.debug(traceback.format_exc())
+            return False
+        
     def on_anycubic_message(self, client, userdata, msg):
         """Process messages from Anycubic and republish to Home Assistant"""
         try:
@@ -1317,6 +1358,10 @@ class AnycubicMqttBridge:
                     # Store the stream URL for snapshot use if available
                     if "urls" in printer_data and "rtspUrl" in printer_data["urls"]:
                         self.stream_url = printer_data["urls"]["rtspUrl"]
+
+                        # Create WebRTC camera entity if it doesn't exist
+                        if not hasattr(self, "webrtc_camera_created") or not self.webrtc_camera_created:
+                            self._create_webrtc_camera_entity()
 
 
                         # Add a URL sensor
