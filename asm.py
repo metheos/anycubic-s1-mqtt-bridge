@@ -1349,7 +1349,7 @@ class AnycubicMqttBridge:
                             json.dumps(image_config),
                             retain=True,
                         )
-                        logger.info(
+                        logger.debug(
                             f"Published snapshot image entity config with prefix {topic_prefix}"
                         )
 
