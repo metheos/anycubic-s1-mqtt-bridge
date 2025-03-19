@@ -1,6 +1,6 @@
 # Anycubic S1 MQTT Bridge
 
-This project provides a bridge between Anycubic Kobra S1 3D printers and Home Assistant using MQTT. It allows for monitoring and controlling the printer through Home Assistant, enabling features such as printer status updates, light control, and video streaming.
+This project provides a bridge between Anycubic Kobra S1 3D printers and Home Assistant using MQTT. It allows for monitoring and controlling the printer through Home Assistant, enabling features such as printer status updates, light control, print pause/resume/cancel, and video streaming.
 
 ## Table of Contents
 
@@ -8,8 +8,8 @@ This project provides a bridge between Anycubic Kobra S1 3D printers and Home As
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [Docker Setup](#docker-setup)
+- [Home Assistant Integration](#home-assistant-integration)
 - [Contributing](#contributing)
-- [License](#license)
 
 ## Installation
 
@@ -66,6 +66,21 @@ To run the application using Docker, you can use the provided `Dockerfile` and `
    ```
 
 This will start the application in a Docker container, allowing for easy deployment and management.
+
+## Home Assistant Integration
+
+The repository includes an example Home Assistant view configuration that you can use to monitor your Anycubic S1 printer:
+
+![Home Assistant View Example](HA_Example.PNG)
+
+To use this view:
+
+1. Copy the content from the [home_assistant_view_example.yaml](home_assistant_view_example.yaml) file
+2. Paste it into the view yaml editor and click **Save**
+
+This view uses elements from https://github.com/piitaya/lovelace-mushroom for the AMS spool visualization.
+
+You may need to adjust entity IDs to match the ones created by your specific printer.
 
 ## Contributing
 

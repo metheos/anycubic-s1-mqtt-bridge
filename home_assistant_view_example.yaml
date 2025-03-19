@@ -1,0 +1,147 @@
+type: sections
+max_columns: 2
+title: Anycubic S1
+path: anycubic-s1
+icon: mdi:printer-3d
+sections:
+  - type: grid
+    cards:
+      - type: picture
+        image_entity: image.anycubic_kobra_s1_anycubic_snapshot
+      - show_name: false
+        show_icon: true
+        show_state: false
+        type: glance
+        entities:
+          - entity: switch.athom_smart_plug_v2_9d345c_switch
+          - entity: button.anycubic_printer_pause_print
+          - entity: button.anycubic_printer_resume_print
+          - entity: button.anycubic_printer_cancel_print
+      - type: custom:mushroom-template-card
+        primary: Slot 1
+        secondary: "{{states('sensor.anycubic_kobra_s1_filament_0_type')}}"
+        icon: mdi:circle
+        entity: sensor.anycubic_kobra_s1_filament_0_type
+        icon_color: "{{states('sensor.anycubic_kobra_s1_filament_0_color')}}"
+        multiline_secondary: false
+        layout: vertical
+        grid_options:
+          columns: 3
+          rows: 2
+        tap_action:
+          action: none
+        hold_action:
+          action: none
+        double_tap_action:
+          action: none
+      - type: custom:mushroom-template-card
+        primary: Slot 2
+        secondary: "{{states('sensor.anycubic_kobra_s1_filament_1_type')}}"
+        icon: mdi:circle
+        entity: sensor.anycubic_kobra_s1_filament_0_type
+        icon_color: "{{states('sensor.anycubic_kobra_s1_filament_1_color')}}"
+        multiline_secondary: false
+        layout: vertical
+        grid_options:
+          columns: 3
+          rows: 2
+        tap_action:
+          action: none
+        hold_action:
+          action: none
+        double_tap_action:
+          action: none
+      - type: custom:mushroom-template-card
+        primary: Slot 3
+        secondary: "{{states('sensor.anycubic_kobra_s1_filament_2_type')}}"
+        icon: mdi:circle
+        entity: sensor.anycubic_kobra_s1_filament_0_type
+        icon_color: "{{states('sensor.anycubic_kobra_s1_filament_2_color')}}"
+        multiline_secondary: false
+        layout: vertical
+        grid_options:
+          columns: 3
+          rows: 2
+        tap_action:
+          action: none
+        hold_action:
+          action: none
+        double_tap_action:
+          action: none
+      - type: custom:mushroom-template-card
+        primary: Slot 4
+        secondary: "{{states('sensor.anycubic_kobra_s1_filament_3_type')}}"
+        icon: mdi:circle
+        entity: sensor.anycubic_kobra_s1_filament_0_type
+        icon_color: "{{states('sensor.anycubic_kobra_s1_filament_3_color')}}"
+        multiline_secondary: false
+        layout: vertical
+        grid_options:
+          columns: 3
+          rows: 2
+        tap_action:
+          action: none
+        hold_action:
+          action: none
+        double_tap_action:
+          action: none
+  - type: grid
+    cards:
+      - type: picture
+        image: https://demo.home-assistant.io/stub_config/t-shirt-promo.png
+        image_entity: image.anycubic_kobra_s1_print_preview
+      - type: heading
+        icon: ""
+        heading_style: subtitle
+        badges:
+          - type: entity
+            entity: sensor.anycubic_kobra_s1_print_filename
+      - type: tile
+        entity: sensor.anycubic_kobra_s1_print_layer
+        features_position: bottom
+        vertical: false
+        name: Layer
+      - type: tile
+        entity: sensor.anycubic_kobra_s1_print_progress
+        features_position: bottom
+        vertical: false
+        name: Progress
+      - type: tile
+        entity: sensor.anycubic_kobra_s1_print_time_elapsed
+        features_position: bottom
+        vertical: false
+        name: Elapsed
+      - type: tile
+        entity: sensor.anycubic_kobra_s1_print_time_remaining
+        features_position: bottom
+        vertical: false
+        name: Remaining
+      - type: tile
+        entity: sensor.anycubic_kobra_s1_target_hotbed_temperature
+        features_position: bottom
+        vertical: true
+        name: Bed target
+      - type: tile
+        entity: sensor.anycubic_kobra_s1_target_nozzle_temperature
+        features_position: bottom
+        vertical: true
+        name: Nozzle target
+badges:
+  - type: entity
+    entity: sensor.anycubic_printer_printer_connectivity
+  - type: entity
+    entity: sensor.athom_smart_plug_v2_9d345c_power
+  - type: entity
+    show_name: false
+    show_state: true
+    show_icon: true
+    entity: sensor.anycubic_kobra_s1_hotbed_temperature
+    icon: mdi:train-car-flatbed
+  - type: entity
+    entity: sensor.anycubic_kobra_s1_nozzle_temperature
+  - type: entity
+    entity: sensor.anycubic_kobra_s1_print_state
+  - type: entity
+    entity: sensor.anycubic_kobra_s1_printer_state
+cards: []
+subview: true
