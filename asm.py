@@ -1056,9 +1056,9 @@ class AnycubicMqttBridge:
             return False
         
     def _create_webrtc_camera_entity(self):
-        """Create a WebRTC camera entity in Home Assistant for remote access"""
+        """Create a camera entity in Home Assistant for remote access"""
         if not self.stream_url:
-            logger.warning("Cannot create WebRTC camera entity: No stream URL available")
+            logger.warning("Cannot create camera entity: No stream URL available")
             return False
         
         try:
@@ -1066,37 +1066,53 @@ class AnycubicMqttBridge:
             topic_prefix = self.get_topic_prefix()
             device_info = self.get_device_info()
             
-            # Create camera entity configuration
+            # Create camera discovery with correct format
             camera_config = {
                 "name": "Anycubic Camera",
-                "unique_id": f"{topic_prefix}_webrtc_camera",
+                "unique_id": f"{topic_prefix}_camera",
                 "device": device_info,
-                "topic": f"homeassistant/camera/{topic_prefix}_webrtc_camera/image",
-                # Special fields for WebRTC
-                "input_source": self.stream_url,
-                "extra_arguments": "-analyzeduration 1000000 -probesize 1000000",
-                "availability_topic": f"homeassistant/camera/{topic_prefix}_webrtc_camera/availability"
+                # Platform is required for camera discovery
+                "platform": "mqtt", 
+                # MQTT camera requires these topics
+                "topic": f"homeassistant/camera/{topic_prefix}_camera/image",
+                "json_attributes_topic": f"homeassistant/camera/{topic_prefix}_camera/attributes",
+                # Include stream URL for Go2RTC/WebRTC integration
+                "json_attributes_template": "{'stream_source': '" + self.stream_url + "'}",
+                "availability": {
+                    "topic": f"homeassistant/camera/{topic_prefix}_camera/availability"
+                }
             }
             
-            # Publish availability
+            # Publish camera config
             self.ha_client.publish(
-                f"homeassistant/camera/{topic_prefix}_webrtc_camera/availability",
-                "online",
-                retain=True
-            )
-            
-            # Publish camera entity configuration
-            self.ha_client.publish(
-                f"homeassistant/camera/{topic_prefix}_webrtc_camera/config",
+                f"homeassistant/camera/{topic_prefix}_camera/config",
                 json.dumps(camera_config),
                 retain=True
             )
             
-            logger.info(f"Created WebRTC camera entity with URL: {self.stream_url}")
+            # Publish availability
+            self.ha_client.publish(
+                f"homeassistant/camera/{topic_prefix}_camera/availability",
+                "online",
+                retain=True
+            )
+            
+            # Publish stream attributes
+            attributes = {
+                "stream_source": self.stream_url,
+                "rtsp_transport": "tcp"
+            }
+            self.ha_client.publish(
+                f"homeassistant/camera/{topic_prefix}_camera/attributes",
+                json.dumps(attributes),
+                retain=True
+            )
+            
+            logger.info(f"Created camera entity with URL: {self.stream_url}")
             self.webrtc_camera_created = True
             return True
         except Exception as e:
-            logger.error(f"Error creating WebRTC camera entity: {e}")
+            logger.error(f"Error creating camera entity: {e}")
             logger.debug(traceback.format_exc())
             return False
         
