@@ -1419,6 +1419,51 @@ class AnycubicMqttBridge:
                         
                         logger.debug(f"Published temperature update from info report: {json.dumps(temp_state)}")
 
+
+                    # Also extract and publish print job data if available
+                    if "project" in printer_data and printer_data["project"]:
+                        project_data = printer_data["project"]
+                        logger.debug(f"Extracted print job data from info report: {json.dumps(project_data)}")
+                        
+                        # Save the print data for future use
+                        if not hasattr(self, "latest_print_data"):
+                            self.latest_print_data = {}
+                        
+                        # Update our stored print data with project info
+                        self.latest_print_data.update(project_data)
+                        
+                        # Create/update print sensors if not already created
+                        if not hasattr(self, "print_sensors_created") or not self.print_sensors_created:
+                            self._create_print_sensors()
+                        
+                        # Create print job state update
+                        print_state = {
+                            "filename": project_data.get("filename", ""),
+                            "progress": project_data.get("progress", 0),
+                            "current_layer": project_data.get("curr_layer", 0),
+                            "total_layers": project_data.get("total_layers", 0),
+                            "print_time": project_data.get("print_time", 0),
+                            "remaining_time": project_data.get("remain_time", 0),
+                            "material_usage": project_data.get("supplies_usage", 0),
+                            "print_status": project_data.get("print_status", 0),
+                            "pause": project_data.get("pause", 0),
+                            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                        
+                        # Publish print job data to Home Assistant
+                        self.ha_client.publish(
+                            f"homeassistant/sensor/{topic_prefix}/print_job",
+                            json.dumps(print_state),
+                            retain=True
+                        )
+                        
+                        logger.debug(f"Published print job update from info report: {json.dumps(print_state)}")
+                        
+                        # Create print controls if needed
+                        if not hasattr(self, "print_controls_created") or not self.print_controls_created:
+                            self._create_print_controls()
+                            self.print_controls_created = True
+
                     state_data = {
                         "state": printer_data.get("state", "unknown"),
                         "print_speed_mode": printer_data.get("print_speed_mode", 0),
