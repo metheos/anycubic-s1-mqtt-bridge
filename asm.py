@@ -12,8 +12,6 @@ from threading import Thread, Event
 import traceback
 import random
 
-logger = logging.getLogger("anycubic_mqtt_bridge")
-
 # Load configuration from .env file if present
 load_dotenv()
 
@@ -22,7 +20,6 @@ load_dotenv()
 def get_required_env(name, default=None, required=False):
     value = os.getenv(name, default)
     if required and (value is None or value == default):
-        logger.error(f"Required environment variable {name} is not set")
         raise ValueError(f"Required environment variable {name} is not set")
     return value
 
@@ -33,6 +30,8 @@ log_level = getattr(logging, log_level_name, logging.INFO)
 logging.basicConfig(
     level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
+logger = logging.getLogger("anycubic_mqtt_bridge")
 
 # Anycubic S1 IP Address - required
 ANYCUBIC_S1_IP = get_required_env("ANYCUBIC_S1_IP", required=True)
