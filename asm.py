@@ -12,10 +12,6 @@ from threading import Thread, Event
 import traceback
 import random
 
-# Set up logging
-logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger("anycubic_mqtt_bridge")
 
 # Load configuration from .env file if present
@@ -30,6 +26,13 @@ def get_required_env(name, default=None, required=False):
         raise ValueError(f"Required environment variable {name} is not set")
     return value
 
+
+# Set up logging
+log_level_name = get_required_env("LOG_LEVEL", "INFO").upper()
+log_level = getattr(logging, log_level_name, logging.INFO)
+logging.basicConfig(
+    level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 # Anycubic S1 IP Address - required
 ANYCUBIC_S1_IP = get_required_env("ANYCUBIC_S1_IP", required=True)
@@ -554,7 +557,6 @@ class AnycubicMqttBridge:
 
     def request_printer_info(self):
         """Request printer information"""
-
         import uuid
 
         # Validate we have required parameters
@@ -562,66 +564,51 @@ class AnycubicMqttBridge:
             logger.error("Cannot request printer info: Missing device ID or mode ID")
             return
 
-        # Create a message ID
+        # Log a single consolidated message at INFO level
+        logger.info("Requesting printer status updates (info, light, multicolor box)")
+        
+        # Create message IDs and payloads for all requests
         message_id = str(uuid.uuid4())
-
-        # Create request payload
+        message_id_light = str(uuid.uuid4()) 
+        message_id_box = str(uuid.uuid4())
+        
+        # Base topic
+        base_topic = f"anycubic/anycubicCloud/v1/web/printer/{self.printer_mode_id}/{self.printer_device_id}"
+        
+        # Create and send info request
         info_request = {
             "type": "info",
             "action": "query",
-            "timestamp": int(time.time() * 1000),  # Current time in milliseconds
+            "timestamp": int(time.time() * 1000),
             "msgid": message_id,
             "data": None,
         }
-
-        # Use the discovered values for the topic
-        topic = f"anycubic/anycubicCloud/v1/web/printer/{self.printer_mode_id}/{self.printer_device_id}/info"
-
-        logger.info(
-            f"Requesting printer information with topic: {topic}, message ID: {message_id}"
-        )
-
-        self.anycubic_client.publish(topic, json.dumps(info_request))
-
-        # Create a message ID for light request
-        message_id_light = str(uuid.uuid4())
-
-        # Create request payload
+        self.anycubic_client.publish(f"{base_topic}/info", json.dumps(info_request))
+        
+        # Log details at DEBUG level only
+        logger.debug(f"Sent info request with message ID: {message_id}")
+        
+        # Create and send light request
         info_request_light = {
             "type": "light",
             "action": "query",
-            "timestamp": int(time.time() * 1000),  # Current time in milliseconds
+            "timestamp": int(time.time() * 1000),
             "msgid": message_id_light,
             "data": None,
         }
-
-        topic_light = f"anycubic/anycubicCloud/v1/web/printer/{self.printer_mode_id}/{self.printer_device_id}/light"
-
-        logger.info(
-            f"Requesting printer light information with topic: {topic_light}, message ID: {message_id_light}"
-        )
-
-        self.anycubic_client.publish(topic_light, json.dumps(info_request_light))
-
-        # Create a message ID for multicolor box request
-        message_id_box = str(uuid.uuid4())
-
-        # Create request payload for multicolor box
+        self.anycubic_client.publish(f"{base_topic}/light", json.dumps(info_request_light))
+        logger.debug(f"Sent light request with message ID: {message_id_light}")
+        
+        # Create and send multicolor box request
         info_request_box = {
             "type": "multiColorBox",
             "action": "getInfo",
-            "timestamp": int(time.time() * 1000),  # Current time in milliseconds
+            "timestamp": int(time.time() * 1000),
             "msgid": message_id_box,
             "data": None,
         }
-
-        topic_box = f"anycubic/anycubicCloud/v1/web/printer/{self.printer_mode_id}/{self.printer_device_id}/multiColorBox"
-
-        logger.info(
-            f"Requesting multicolor box information with topic: {topic_box}, message ID: {message_id_box}"
-        )
-
-        self.anycubic_client.publish(topic_box, json.dumps(info_request_box))
+        self.anycubic_client.publish(f"{base_topic}/multiColorBox", json.dumps(info_request_box))
+        logger.debug(f"Sent multicolor box request with message ID: {message_id_box}")
 
     def on_anycubic_disconnect(self, client, userdata, rc):
         """Handle disconnection from Anycubic broker"""
@@ -936,7 +923,11 @@ class AnycubicMqttBridge:
         """Background worker that periodically requests printer information"""
         while running:
             try:
-                self.request_printer_info()
+                # Only request info if the Anycubic client is connected
+                if self.anycubic_client and self.anycubic_client.is_connected():
+                    self.request_printer_info()
+                else:
+                    logger.debug("Skipping printer info request - Anycubic client not connected")
             except Exception as e:
                 logger.error(f"Error in info update worker: {e}")
 
