@@ -1444,7 +1444,7 @@ class AnycubicMqttBridge:
                             "remaining_time": project_data.get("remain_time", 0),
                             "material_usage": project_data.get("supplies_usage", 0),
                             "print_status": project_data.get("print_status", 0),
-                            "pause": project_data.get("pause", 0),
+                            "state": data.get("state", "unknown"),
                             "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                         }
                         
