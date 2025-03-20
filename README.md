@@ -78,7 +78,17 @@ To use this view:
 1. Copy the content from the [home_assistant_view_example.yaml](home_assistant_view_example.yaml) file
 2. Paste it into the view yaml editor and click **Save**
 
-This view uses elements from https://github.com/piitaya/lovelace-mushroom for the AMS spool visualization.
+This view uses elements from https://github.com/piitaya/lovelace-mushroom for the AMS spool visualization and badges.
+
+The camera is manually configured in configuration.yaml as below
+
+```
+camera:
+  - platform: ffmpeg
+    name: "Anycubic S1 Printer Camera"
+    input: "http://<Anycubic S1 IP>:18088/flv"
+    extra_arguments: "-analyzeduration 1000000 -probesize 1000000 -fflags nobuffer -flags low_delay -strict experimental -fflags +genpts+discardcorrupt"
+```
 
 You may need to adjust entity IDs to match the ones created by your specific printer.
 
