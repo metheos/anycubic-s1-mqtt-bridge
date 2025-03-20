@@ -1681,6 +1681,7 @@ class AnycubicMqttBridge:
 
                 elif "type" in data and data["type"] == "file":
                     logger.info(f"Received file report: action={data.get('action', 'unknown')}")
+                    logger.debug(f"File report data: {json.dumps(data)}")
                     try:
                         if "data" in data and data["data"] and "file_details" in data["data"] and "thumbnail" in data["data"]["file_details"]:
                             # Extract the base64 thumbnail
