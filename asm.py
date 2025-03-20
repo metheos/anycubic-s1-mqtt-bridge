@@ -69,6 +69,8 @@ class AnycubicMqttBridge:
         self.anycubic_client = None
         self.ha_client = None
         self.stream_url = None
+        self.current_print_state = "unknown"  # Add this attribute to store the current print state
+
 
         # Different snapshot intervals based on printer state
         self.snapshot_interval_idle = int(
@@ -1443,6 +1445,7 @@ class AnycubicMqttBridge:
                             "print_time": project_data.get("print_time", 0),
                             "remaining_time": project_data.get("remain_time", 0),
                             "material_usage": project_data.get("supplies_usage", 0),
+                            "state": self.current_print_state,  # Use the current print state
                             "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                         }
                         
@@ -1528,6 +1531,9 @@ class AnycubicMqttBridge:
                             # Update our stored print data
                             self.latest_print_data.update(print_data)
                             
+                            # Update the current print state
+                            self.current_print_state = data.get("state", "unknown")
+                            
                             # Create/update print sensors if not already created
                             if not hasattr(self, "print_sensors_created") or not self.print_sensors_created:
                                 self._create_print_sensors()
@@ -1544,7 +1550,7 @@ class AnycubicMqttBridge:
                                 "print_time": print_data.get("print_time", 0),
                                 "remaining_time": print_data.get("remain_time", 0),
                                 "material_usage": print_data.get("supplies_usage", 0),
-                                "state": data.get("state", "unknown"),
+                                "state": self.current_print_state,  # Use the current print state
                                 "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                             }
                             
