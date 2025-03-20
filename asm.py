@@ -1443,8 +1443,6 @@ class AnycubicMqttBridge:
                             "print_time": project_data.get("print_time", 0),
                             "remaining_time": project_data.get("remain_time", 0),
                             "material_usage": project_data.get("supplies_usage", 0),
-                            "print_status": project_data.get("print_status", 0),
-                            "state": data.get("state", "unknown"),
                             "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                         }
                         
@@ -1518,7 +1516,7 @@ class AnycubicMqttBridge:
 
                 elif "type" in data and data["type"] == "print":
                     logger.info(f"Received print job report: action={data.get('action', 'unknown')}, state={data.get('state', 'unknown')}")
-                    logger.debug(f"Extracted print job data from info report: {json.dumps(data)}")
+                    logger.debug(f"Print job report data: {json.dumps(data)}")
                     try:
                         if "data" in data and data["data"]:
                             print_data = data["data"]
