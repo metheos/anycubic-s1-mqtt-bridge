@@ -1518,6 +1518,7 @@ class AnycubicMqttBridge:
 
                 elif "type" in data and data["type"] == "print":
                     logger.info(f"Received print job report: action={data.get('action', 'unknown')}, state={data.get('state', 'unknown')}")
+                    logger.debug(f"Extracted print job data from info report: {json.dumps(data)}")
                     try:
                         if "data" in data and data["data"]:
                             print_data = data["data"]
