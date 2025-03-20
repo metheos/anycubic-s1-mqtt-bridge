@@ -147,12 +147,15 @@ sections:
 badges:
   - type: entity
     entity: sensor.anycubic_printer_printer_connectivity
+  - type: custom:mushroom-template-badge
+    content: >-
+
+      {{states('sensor.anycubic_kobra_s1_printer_state')}} /
+      {{states('sensor.anycubic_kobra_s1_print_state')}}
+    icon: mdi:information
+    color: blue
   - type: entity
     entity: sensor.athom_smart_plug_v2_9d345c_power
-  - type: entity
-    entity: sensor.anycubic_kobra_s1_print_state
-  - type: entity
-    entity: sensor.anycubic_kobra_s1_printer_state
   - type: custom:mushroom-template-badge
     content: >-
 
@@ -161,6 +164,8 @@ badges:
     icon: mdi:train-car-flatbed
     color: blue
     entity: sensor.anycubic_kobra_s1_hotbed_temperature
+    tap_action:
+      action: more-info
   - type: custom:mushroom-template-badge
     content: >-
 
@@ -169,6 +174,8 @@ badges:
     icon: mdi:printer-3d-nozzle-heat
     color: blue
     entity: sensor.anycubic_kobra_s1_nozzle_temperature
+    tap_action:
+      action: more-info
 cards: []
 subview: true
 header:
