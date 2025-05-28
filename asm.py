@@ -742,13 +742,27 @@ class AnycubicMqttBridge:
 
     def take_snapshot(self):
         """Capture a snapshot from the camera stream"""
+        # Try HTTP snapshot endpoint first
+        try:
+            logger.info(f"Taking snapshot from HTTP endpoint: http://{ANYCUBIC_S1_IP}/webcam/?action=snapshot")
+            image_data = self._capture_snapshot_http()
+            
+            if image_data:
+                logger.debug("Successfully captured snapshot via HTTP")
+                return image_data
+            else:
+                logger.warning("HTTP snapshot failed, trying fallback method")
+        except Exception as e:
+            logger.warning(f"HTTP snapshot failed with error: {e}, trying fallback method")
+        
+        # Fallback to existing stream-based method
         if not self.stream_url:
-            logger.warning("No camera stream URL available for snapshot")
+            logger.warning("No camera stream URL available for fallback snapshot")
             return None
 
         try:
-            # First try to take a snapshot directly without starting video capture
-            logger.info(f"Taking snapshot from {self.stream_url}")
+            # Try to take a snapshot directly without starting video capture
+            logger.info(f"Taking fallback snapshot from {self.stream_url}")
             image_data = self._capture_snapshot_with_ffmpeg()
 
             # If snapshot successful, return it
@@ -771,6 +785,39 @@ class AnycubicMqttBridge:
 
         except Exception as e:
             logger.error(f"Error taking snapshot: {e}")
+            logger.debug(traceback.format_exc())
+            return None
+
+    def _capture_snapshot_http(self):
+        """Capture a snapshot using the HTTP snapshot endpoint"""
+        try:
+            # Build the snapshot URL
+            snapshot_url = f"http://{ANYCUBIC_S1_IP}/webcam/?action=snapshot"
+            
+            # Make HTTP request to get the snapshot
+            response = requests.get(snapshot_url, timeout=10)
+            
+            if response.status_code == 200:
+                # Check if we got valid image data
+                content_type = response.headers.get('content-type', '')
+                if 'image' in content_type.lower():
+                    logger.debug(f"Successfully captured HTTP snapshot ({len(response.content)} bytes)")
+                    return response.content
+                else:
+                    logger.warning(f"HTTP snapshot returned unexpected content type: {content_type}")
+                    return None
+            else:
+                logger.warning(f"HTTP snapshot failed with status code: {response.status_code}")
+                return None
+                
+        except requests.exceptions.Timeout:
+            logger.warning("HTTP snapshot request timed out")
+            return None
+        except requests.exceptions.ConnectionError:
+            logger.warning("HTTP snapshot connection failed")
+            return None
+        except Exception as e:
+            logger.error(f"Error capturing HTTP snapshot: {e}")
             logger.debug(traceback.format_exc())
             return None
 
@@ -2353,15 +2400,15 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Save terminal settings
-    import termios
-    import sys
-
-    try:
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-    except termios.error:
-        old_settings = None
+    # Save terminal settings (skip on Windows)
+    old_settings = None
+    if sys.platform != 'win32':
+        try:
+            import termios
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+        except (ImportError, termios.error):
+            old_settings = None
 
     try:
         bridge = AnycubicMqttBridge()
@@ -2380,15 +2427,16 @@ def main():
         bridge.disconnect()
         logger.info("Bridge stopped")
 
-        # Restore terminal settings
-        if old_settings:
+        # Restore terminal settings (skip on Windows)
+        if old_settings and sys.platform != 'win32':
             try:
+                import termios
+                fd = sys.stdin.fileno()
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
             except Exception:
                 pass
 
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
