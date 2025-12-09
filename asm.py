@@ -72,6 +72,9 @@ class AnycubicMqttBridge:
         self.current_print_state = "unknown"  # Add this attribute to store the current print state
 
 
+        # One-time migration flag to avoid repeated retained cleanup
+        self._cleanup_flag_file = os.path.join(os.path.dirname(__file__), ".ha_discovery_cleanup_done")
+
         # Different snapshot intervals based on printer state
         self.snapshot_interval_idle = int(
             get_required_env("SNAPSHOT_INTERVAL_IDLE", "300")
@@ -630,12 +633,50 @@ class AnycubicMqttBridge:
             logger.info("Connected to Home Assistant MQTT broker")
             self.ha_connection_state = ConnectionState.CONNECTED
             self.update_connectivity_status()
+            # Run retained cleanup only once per installation
+            try:
+                if not self._has_migration_cleanup_done():
+                    # Clear any old retained discovery configs that may cause HA errors
+                    self.cleanup_old_discovery_entities()
+                    self._mark_migration_cleanup_done()
+            except Exception as e:
+                logger.debug(f"Cleanup flag check failed: {e}")
         else:
             logger.error(
                 f"Failed to connect to Home Assistant broker, return code: {rc}"
             )
             self.ha_connection_state = ConnectionState.ERROR
             self.update_connectivity_status()
+    def cleanup_old_discovery_entities(self):
+        """Remove previously published, invalid MQTT discovery configs (retained)."""
+        try:
+            topic_prefix = self.get_topic_prefix()
+
+            # Old invalid camera discovery (MQTT camera requires 'topic'; we use image entity instead)
+            bad_camera_topic = f"homeassistant/camera/{topic_prefix}_printer_camera/config"
+            self.ha_client.publish(bad_camera_topic, "", retain=True)
+
+            # Old invalid filament color lights (missing command_topic). We now publish sensors instead.
+            for i in range(4):
+                bad_light_topic = f"homeassistant/light/{topic_prefix}_filament_{i}_color_light/config"
+                self.ha_client.publish(bad_light_topic, "", retain=True)
+
+            logger.info("Cleared old retained MQTT discovery entities (camera, filament lights)")
+        except Exception as e:
+            logger.warning(f"Failed to clear old discovery entities: {e}")
+
+    def _has_migration_cleanup_done(self):
+        try:
+            return os.path.isfile(self._cleanup_flag_file)
+        except Exception:
+            return False
+
+    def _mark_migration_cleanup_done(self):
+        try:
+            with open(self._cleanup_flag_file, "w", encoding="utf-8") as f:
+                f.write("done")
+        except Exception:
+            pass
 
     def on_ha_disconnect(self, client, userdata, rc):
         """Handle disconnection from Home Assistant broker"""
