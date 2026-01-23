@@ -925,7 +925,17 @@ class AnycubicMqttBridge:
             return None
 
         except (ImportError, FileNotFoundError) as e:
-            logger.warning(f"Could not use ffmpeg: {e}")
+            if isinstance(e, FileNotFoundError):
+                try:
+                    cmd0 = ffmpeg_cmd[0] if 'ffmpeg_cmd' in locals() and ffmpeg_cmd else 'ffmpeg'
+                except Exception:
+                    cmd0 = 'ffmpeg'
+                missing = getattr(e, "filename", None) or cmd0
+                logger.warning(f"ffmpeg invocation failed: file not found: {missing} ({e})")
+                logger.info("Hint: Install FFmpeg and ensure 'ffmpeg' is on your PATH. On Windows, you can run 'winget install Gyan.FFmpeg' or download a build and add its 'bin' folder to PATH, then restart this service.")
+            else:
+                logger.warning(f"Could not use ffmpeg: {e}")
+                logger.info("Hint: Install the FFmpeg package for your OS and ensure the 'ffmpeg' executable is available on PATH.")
             return None
         except Exception as e:
             logger.error(f"Error using ffmpeg: {e}")
