@@ -1683,6 +1683,72 @@ class AnycubicMqttBridge:
                             # Get topic prefix for publishing
                             topic_prefix = self.get_topic_prefix()
                             
+                            # Get the actual number of boxes
+                            num_boxes = len(data["data"]["multi_color_box"])
+                            logger.info(f"Detected {num_boxes} ACE Pro color box(es)")
+                            
+                            # Track previous number of boxes for cleanup
+                            if not hasattr(self, "detected_num_boxes"):
+                                self.detected_num_boxes = 0
+                            
+                            previous_num_boxes = self.detected_num_boxes
+                            
+                            # Clean up extra boxes if the number decreased
+                            if previous_num_boxes > num_boxes:
+                                logger.info(f"Cleaning up {previous_num_boxes - num_boxes} extra box(es)")
+                                for old_box_index in range(num_boxes, previous_num_boxes):
+                                    # Remove box status sensor
+                                    self.ha_client.publish(
+                                        f"homeassistant/sensor/{topic_prefix}_color_box_{old_box_index}_status/config",
+                                        "",
+                                        retain=True
+                                    )
+                                    # Remove box temperature sensor
+                                    self.ha_client.publish(
+                                        f"homeassistant/sensor/{topic_prefix}_color_box_{old_box_index}_temp/config",
+                                        "",
+                                        retain=True
+                                    )
+                                    # Remove active filament slot sensor
+                                    self.ha_client.publish(
+                                        f"homeassistant/sensor/{topic_prefix}_color_box_{old_box_index}_active_filament_slot/config",
+                                        "",
+                                        retain=True
+                                    )
+                                    # Remove filament slot sensors for this box (8 slots)
+                                    for slot_index in range(8):
+                                        self.ha_client.publish(
+                                            f"homeassistant/sensor/{topic_prefix}_color_box_{old_box_index}_filament_{slot_index}_type/config",
+                                            "",
+                                            retain=True
+                                        )
+                                        self.ha_client.publish(
+                                            f"homeassistant/sensor/{topic_prefix}_color_box_{old_box_index}_filament_{slot_index}_color/config",
+                                            "",
+                                            retain=True
+                                        )
+                                    # Clean up state topics for this box
+                                    self.ha_client.publish(
+                                        f"homeassistant/sensor/{topic_prefix}/color_box_{old_box_index}",
+                                        "",
+                                        retain=True
+                                    )
+                                    # Clean up filament slot state topics (8 slots)
+                                    for slot_index in range(8):
+                                        self.ha_client.publish(
+                                            f"homeassistant/sensor/{topic_prefix}/color_box_{old_box_index}_filament_slot_{slot_index}",
+                                            "",
+                                            retain=True
+                                        )
+                                    logger.info(f"Cleaned up entities for box {old_box_index}")
+                            
+                            # Update the detected number of boxes
+                            self.detected_num_boxes = num_boxes
+                            
+                            # Create/update color box sensors based on actual number of boxes
+                            if not hasattr(self, "color_box_sensors_created") or not self.color_box_sensors_created:
+                                self._create_color_box_sensors(num_boxes)
+                            
                             # Process all color boxes (supports multiple ACE Pro devices)
                             for box_index, color_box_data in enumerate(data["data"]["multi_color_box"]):
                                 # Save the box data for future use (using box_index as key)
@@ -1694,10 +1760,6 @@ class AnycubicMqttBridge:
                                     self.latest_color_box_data[box_index] = {}
                                 
                                 self.latest_color_box_data[box_index].update(color_box_data)
-                                
-                                # Create/update color box sensors if not already created
-                                if not hasattr(self, "color_box_sensors_created") or not self.color_box_sensors_created:
-                                    self._create_color_box_sensors()
                                 
                                 # Create a state update with color box information
                                 box_state = {
@@ -1932,17 +1994,14 @@ class AnycubicMqttBridge:
             logger.debug(traceback.format_exc())
             return False
 
-    def _create_color_box_sensors(self):
-        """Create MultiColor Box related sensors in Home Assistant for all boxes"""
+    def _create_color_box_sensors(self, num_boxes):
+        """Create MultiColor Box related sensors in Home Assistant for the detected boxes"""
         # Get topic prefix and device info
         topic_prefix = self.get_topic_prefix()
         device_info = self.get_device_info()
         
-        # Create sensors for up to 4 color boxes (most common is 1-2)
-        # This will dynamically create entities for multiple ACE Pro devices
-        max_boxes = 4
-        
-        for box_index in range(max_boxes):
+        # Create sensors only for the actual number of boxes present
+        for box_index in range(num_boxes):
             # List of box sensors to create for this specific box
             sensors = [
                 {
@@ -2058,7 +2117,7 @@ class AnycubicMqttBridge:
         
         # Mark sensors as created
         self.color_box_sensors_created = True
-        logger.info("Created MultiColor Box sensors in Home Assistant (up to 4 devices, 8 slots each) with backward compatibility")
+        logger.info(f"Created MultiColor Box sensors in Home Assistant ({num_boxes} device(s), 8 slots each) with backward compatibility")
 
     def _create_print_controls(self):
         """Create buttons in Home Assistant to control print jobs"""
