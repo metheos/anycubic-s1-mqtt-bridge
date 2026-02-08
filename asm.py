@@ -1676,67 +1676,90 @@ class AnycubicMqttBridge:
                 
                 elif "type" in data and data["type"] == "multiColorBox":
                     logger.info("Received multicolor box report")
+                    # log the full report at debug level
+                    logger.debug(f"Multicolor box report data: {json.dumps(data)}")
                     try:
                         if "data" in data and "multi_color_box" in data["data"] and data["data"]["multi_color_box"]:
-                            color_box_data = data["data"]["multi_color_box"][0]  # Get the first (and usually only) box
-                            
-                            # Save the box data for future use
-                            if not hasattr(self, "latest_color_box_data"):
-                                self.latest_color_box_data = {}
-                            
-                            # Update our stored box data
-                            self.latest_color_box_data.update(color_box_data)
-                            
-                            # Create/update color box sensors if not already created
-                            if not hasattr(self, "color_box_sensors_created") or not self.color_box_sensors_created:
-                                self._create_color_box_sensors()
-                            
                             # Get topic prefix for publishing
                             topic_prefix = self.get_topic_prefix()
                             
-                            # Create a state update with color box information
-                            box_state = {
-                                "status": color_box_data.get("status", 0),
-                                "temperature": color_box_data.get("temp", 0),
-                                "loaded_slot": color_box_data.get("loaded_slot", -1),
-                                "auto_feed": color_box_data.get("auto_feed", 0),
-                                "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            }
-                            
-                            # Publish box state data to Home Assistant
-                            self.ha_client.publish(
-                                f"homeassistant/sensor/{topic_prefix}/color_box",
-                                json.dumps(box_state),
-                                retain=True
-                            )
-                            
-                            # Process filament slot information
-                            if "slots" in color_box_data:
-                                slots = color_box_data["slots"]
-                                for slot in slots:
-                                    slot_index = slot.get("index", 0)
-                                    slot_data = {
-                                        "index": slot_index,
-                                        "type": slot.get("type", "Unknown"),
-                                        "status": slot.get("status", 0),
-                                        "color_rgb": slot.get("color", [128, 128, 128]),
-                                        "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                    }
-                                    
-                                    # Add hex color for easier use in Home Assistant
-                                    if "color" in slot:
-                                        rgb = slot["color"]
-                                        if len(rgb) == 3:
-                                            slot_data["color_hex"] = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
-                                    
-                                    # Publish slot data to Home Assistant
+                            # Process all color boxes (supports multiple ACE Pro devices)
+                            for box_index, color_box_data in enumerate(data["data"]["multi_color_box"]):
+                                # Save the box data for future use (using box_index as key)
+                                if not hasattr(self, "latest_color_box_data"):
+                                    self.latest_color_box_data = {}
+                                
+                                # Update our stored box data with box index
+                                if box_index not in self.latest_color_box_data:
+                                    self.latest_color_box_data[box_index] = {}
+                                
+                                self.latest_color_box_data[box_index].update(color_box_data)
+                                
+                                # Create/update color box sensors if not already created
+                                if not hasattr(self, "color_box_sensors_created") or not self.color_box_sensors_created:
+                                    self._create_color_box_sensors()
+                                
+                                # Create a state update with color box information
+                                box_state = {
+                                    "box_index": box_index,
+                                    "status": color_box_data.get("status", 0),
+                                    "temperature": color_box_data.get("temp", 0),
+                                    "loaded_slot": color_box_data.get("loaded_slot", -1),
+                                    "auto_feed": color_box_data.get("auto_feed", 0),
+                                    "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                }
+                                
+                                # Publish box state data to Home Assistant with box index
+                                self.ha_client.publish(
+                                    f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}",
+                                    json.dumps(box_state),
+                                    retain=True
+                                )
+                                
+                                # For backward compatibility, also publish first box data without index
+                                if box_index == 0:
                                     self.ha_client.publish(
-                                        f"homeassistant/sensor/{topic_prefix}/filament_slot_{slot_index}",
-                                        json.dumps(slot_data),
+                                        f"homeassistant/sensor/{topic_prefix}/color_box",
+                                        json.dumps(box_state),
                                         retain=True
                                     )
-                            
-                            logger.debug(f"Published multicolor box update with {len(color_box_data.get('slots', []))} slots")
+                                
+                                # Process filament slot information
+                                if "slots" in color_box_data:
+                                    slots = color_box_data["slots"]
+                                    for slot in slots:
+                                        slot_index = slot.get("index", 0)
+                                        slot_data = {
+                                            "box_index": box_index,
+                                            "slot_index": slot_index,
+                                            "type": slot.get("type", "Unknown"),
+                                            "status": slot.get("status", 0),
+                                            "color_rgb": slot.get("color", [128, 128, 128]),
+                                            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                        }
+                                        
+                                        # Add hex color for easier use in Home Assistant
+                                        if "color" in slot:
+                                            rgb = slot["color"]
+                                            if len(rgb) == 3:
+                                                slot_data["color_hex"] = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+                                        
+                                        # Publish slot data to Home Assistant with box index
+                                        self.ha_client.publish(
+                                            f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}_filament_slot_{slot_index}",
+                                            json.dumps(slot_data),
+                                            retain=True
+                                        )
+                                        
+                                        # For backward compatibility, also publish first box filament data without box index
+                                        if box_index == 0:
+                                            self.ha_client.publish(
+                                                f"homeassistant/sensor/{topic_prefix}/filament_slot_{slot_index}",
+                                                json.dumps(slot_data),
+                                                retain=True
+                                            )
+                                
+                                logger.debug(f"Published multicolor box {box_index} update with {len(color_box_data.get('slots', []))} slots")
                     except Exception as e:
                         logger.error(f"Error processing multicolor box data: {e}")
                         logger.debug(traceback.format_exc())
@@ -1910,71 +1933,132 @@ class AnycubicMqttBridge:
             return False
 
     def _create_color_box_sensors(self):
-        """Create MultiColor Box related sensors in Home Assistant"""
+        """Create MultiColor Box related sensors in Home Assistant for all boxes"""
         # Get topic prefix and device info
         topic_prefix = self.get_topic_prefix()
         device_info = self.get_device_info()
         
-        # List of box sensors to create
-        sensors = [
-            {
-                "name": "MultiColor Box Status",
-                "unique_id": f"{topic_prefix}_color_box_status",
-                "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box",
-                "value_template": "{{ 'Connected' if value_json.status == 1 else 'Disconnected' }}",
-                "icon": "mdi:printer-3d-nozzle",
-                "device": device_info,
-            },
-            {
-                "name": "MultiColor Box Temperature",
-                "unique_id": f"{topic_prefix}_color_box_temp",
-                "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box",
-                "value_template": "{{ value_json.temperature }}",
-                "unit_of_measurement": "°C",
-                "device_class": "temperature",
-                "icon": "mdi:thermometer",
-                "device": device_info,
-            },
-            {
-                "name": "Active Filament Slot",
-                "unique_id": f"{topic_prefix}_active_filament_slot",
-                "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box",
-                "value_template": "{{ value_json.loaded_slot if value_json.loaded_slot >= 0 else 'None' }}",
-                "icon": "mdi:numeric",
-                "device": device_info,
-            },
-        ]
+        # Create sensors for up to 4 color boxes (most common is 1-2)
+        # This will dynamically create entities for multiple ACE Pro devices
+        max_boxes = 4
         
-        # Create individual filament slot sensors (assuming 4 slots based on the example)
-        for i in range(4):
-            # Filament type sensor
-            sensors.append({
-                "name": f"Filament {i} Type",
-                "unique_id": f"{topic_prefix}_filament_{i}_type",
-                "state_topic": f"homeassistant/sensor/{topic_prefix}/filament_slot_{i}",
-                "value_template": "{{ value_json.type }}",
-                "icon": "mdi:spool",
-                "device": device_info,
-            })
+        for box_index in range(max_boxes):
+            # List of box sensors to create for this specific box
+            sensors = [
+                {
+                    "name": f"MultiColor Box {box_index} Status",
+                    "unique_id": f"{topic_prefix}_color_box_{box_index}_status",
+                    "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}",
+                    "value_template": "{{ 'Connected' if value_json.status == 1 else 'Disconnected' }}",
+                    "icon": "mdi:printer-3d-nozzle",
+                    "device": device_info,
+                },
+                {
+                    "name": f"MultiColor Box {box_index} Temperature",
+                    "unique_id": f"{topic_prefix}_color_box_{box_index}_temp",
+                    "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}",
+                    "value_template": "{{ value_json.temperature }}",
+                    "unit_of_measurement": "°C",
+                    "device_class": "temperature",
+                    "icon": "mdi:thermometer",
+                    "device": device_info,
+                },
+                {
+                    "name": f"Active Filament Slot (Box {box_index})",
+                    "unique_id": f"{topic_prefix}_color_box_{box_index}_active_filament_slot",
+                    "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}",
+                    "value_template": "{{ value_json.loaded_slot if value_json.loaded_slot >= 0 else 'None' }}",
+                    "icon": "mdi:numeric",
+                    "device": device_info,
+                },
+            ]
             
-            # Filament color sensor (using RGB format for HA)
-            sensors.append({
-                "name": f"Filament {i} Color",
-                "unique_id": f"{topic_prefix}_filament_{i}_color",
-                "state_topic": f"homeassistant/sensor/{topic_prefix}/filament_slot_{i}",
-                "value_template": "{{ value_json.color_hex }}",
-                "icon": "mdi:palette",
-                "device": device_info,
-            })
-        
-        # Publish all sensor configurations
-        for sensor in sensors:
-            discovery_topic = f"homeassistant/sensor/{sensor['unique_id']}/config"
-            self.ha_client.publish(discovery_topic, json.dumps(sensor), retain=True)
+            # Create individual filament slot sensors for this box (8 slots per box for ACE Pro)
+            for i in range(8):
+                # Filament type sensor
+                sensors.append({
+                    "name": f"Box {box_index} Filament {i} Type",
+                    "unique_id": f"{topic_prefix}_color_box_{box_index}_filament_{i}_type",
+                    "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}_filament_slot_{i}",
+                    "value_template": "{{ value_json.type }}",
+                    "icon": "mdi:spool",
+                    "device": device_info,
+                })
+                
+                # Filament color sensor (using RGB format for HA)
+                sensors.append({
+                    "name": f"Box {box_index} Filament {i} Color",
+                    "unique_id": f"{topic_prefix}_color_box_{box_index}_filament_{i}_color",
+                    "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}_filament_slot_{i}",
+                    "value_template": "{{ value_json.color_hex }}",
+                    "icon": "mdi:palette",
+                    "device": device_info,
+                })
+            
+            # Publish all sensor configurations for this box
+            for sensor in sensors:
+                discovery_topic = f"homeassistant/sensor/{sensor['unique_id']}/config"
+                self.ha_client.publish(discovery_topic, json.dumps(sensor), retain=True)
+            
+            # For backward compatibility, also create sensors without box index for the first box
+            if box_index == 0:
+                backward_compat_sensors = [
+                    {
+                        "name": "MultiColor Box Status",
+                        "unique_id": f"{topic_prefix}_color_box_status",
+                        "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box",
+                        "value_template": "{{ 'Connected' if value_json.status == 1 else 'Disconnected' }}",
+                        "icon": "mdi:printer-3d-nozzle",
+                        "device": device_info,
+                    },
+                    {
+                        "name": "MultiColor Box Temperature",
+                        "unique_id": f"{topic_prefix}_color_box_temp",
+                        "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box",
+                        "value_template": "{{ value_json.temperature }}",
+                        "unit_of_measurement": "°C",
+                        "device_class": "temperature",
+                        "icon": "mdi:thermometer",
+                        "device": device_info,
+                    },
+                    {
+                        "name": "Active Filament Slot",
+                        "unique_id": f"{topic_prefix}_active_filament_slot",
+                        "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box",
+                        "value_template": "{{ value_json.loaded_slot if value_json.loaded_slot >= 0 else 'None' }}",
+                        "icon": "mdi:numeric",
+                        "device": device_info,
+                    },
+                ]
+                
+                # Add backward compatible filament sensors for the first box
+                for i in range(8):
+                    backward_compat_sensors.append({
+                        "name": f"Filament {i} Type",
+                        "unique_id": f"{topic_prefix}_filament_{i}_type",
+                        "state_topic": f"homeassistant/sensor/{topic_prefix}/filament_slot_{i}",
+                        "value_template": "{{ value_json.type }}",
+                        "icon": "mdi:spool",
+                        "device": device_info,
+                    })
+                    
+                    backward_compat_sensors.append({
+                        "name": f"Filament {i} Color",
+                        "unique_id": f"{topic_prefix}_filament_{i}_color",
+                        "state_topic": f"homeassistant/sensor/{topic_prefix}/filament_slot_{i}",
+                        "value_template": "{{ value_json.color_hex }}",
+                        "icon": "mdi:palette",
+                        "device": device_info,
+                    })
+                
+                # Publish backward compatibility sensors
+                for sensor in backward_compat_sensors:
+                    discovery_topic = f"homeassistant/sensor/{sensor['unique_id']}/config"
+                    self.ha_client.publish(discovery_topic, json.dumps(sensor), retain=True)
         
         # Mark sensors as created
         self.color_box_sensors_created = True
-        logger.info("Created MultiColor Box sensors in Home Assistant")
+        logger.info("Created MultiColor Box sensors in Home Assistant (up to 4 devices, 8 slots each) with backward compatibility")
 
     def _create_print_controls(self):
         """Create buttons in Home Assistant to control print jobs"""
