@@ -33,6 +33,9 @@ logging.basicConfig(
 
 logger = logging.getLogger("anycubic_mqtt_bridge")
 
+# Application version
+VERSION = "2026.02.08"
+
 # Anycubic S1 IP Address - required
 ANYCUBIC_S1_IP = get_required_env("ANYCUBIC_S1_IP", required=True)
 
@@ -2591,6 +2594,8 @@ def signal_handler(sig, frame):
 
 def main():
     """Main function to run the bridge"""
+    logger.info(f"Anycubic MQTT Bridge v{VERSION} starting up...")
+    
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
