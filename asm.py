@@ -1686,81 +1686,50 @@ class AnycubicMqttBridge:
                             # Get topic prefix for publishing
                             topic_prefix = self.get_topic_prefix()
                             
-                            # Get the actual number of boxes
-                            num_boxes = len(data["data"]["multi_color_box"])
-                            logger.info(f"Detected {num_boxes} ACE Pro color box(es)")
+                            # Get the number of boxes in this report
+                            num_boxes_in_report = len(data["data"]["multi_color_box"])
                             
-                            # Track previous number of boxes for cleanup
-                            if not hasattr(self, "detected_num_boxes"):
-                                self.detected_num_boxes = 0
+                            # Track the maximum number of boxes we've ever seen
+                            if not hasattr(self, "max_detected_boxes"):
+                                self.max_detected_boxes = 0
                             
-                            previous_num_boxes = self.detected_num_boxes
+                            # Track the number from the previous report for comparison
+                            if not hasattr(self, "previous_report_box_count"):
+                                self.previous_report_box_count = 0
                             
-                            # Clean up extra boxes if the number decreased
-                            if previous_num_boxes > num_boxes:
-                                logger.info(f"Cleaning up {previous_num_boxes - num_boxes} extra box(es)")
-                                for old_box_index in range(num_boxes, previous_num_boxes):
-                                    # Remove box status sensor
-                                    self.ha_client.publish(
-                                        f"homeassistant/sensor/{topic_prefix}_color_box_{old_box_index}_status/config",
-                                        "",
-                                        retain=True
-                                    )
-                                    # Remove box temperature sensor
-                                    self.ha_client.publish(
-                                        f"homeassistant/sensor/{topic_prefix}_color_box_{old_box_index}_temp/config",
-                                        "",
-                                        retain=True
-                                    )
-                                    # Remove active filament slot sensor
-                                    self.ha_client.publish(
-                                        f"homeassistant/sensor/{topic_prefix}_color_box_{old_box_index}_active_filament_slot/config",
-                                        "",
-                                        retain=True
-                                    )
-                                    # Remove filament slot sensors for this box (8 slots)
-                                    for slot_index in range(8):
-                                        self.ha_client.publish(
-                                            f"homeassistant/sensor/{topic_prefix}_color_box_{old_box_index}_filament_{slot_index}_type/config",
-                                            "",
-                                            retain=True
-                                        )
-                                        self.ha_client.publish(
-                                            f"homeassistant/sensor/{topic_prefix}_color_box_{old_box_index}_filament_{slot_index}_color/config",
-                                            "",
-                                            retain=True
-                                        )
-                                    # Clean up state topics for this box
-                                    self.ha_client.publish(
-                                        f"homeassistant/sensor/{topic_prefix}/color_box_{old_box_index}",
-                                        "",
-                                        retain=True
-                                    )
-                                    # Clean up filament slot state topics (8 slots)
-                                    for slot_index in range(8):
-                                        self.ha_client.publish(
-                                            f"homeassistant/sensor/{topic_prefix}/color_box_{old_box_index}_filament_slot_{slot_index}",
-                                            "",
-                                            retain=True
-                                        )
-                                    logger.info(f"Cleaned up entities for box {old_box_index}")
+                            # Debug log when the number of boxes in the report differs from previous
+                            if self.previous_report_box_count != num_boxes_in_report:
+                                logger.debug(f"Multicolor box count changed: previous report had {self.previous_report_box_count} box(es), current report has {num_boxes_in_report} box(es)")
                             
-                            # Update the detected number of boxes
-                            self.detected_num_boxes = num_boxes
+                            self.previous_report_box_count = num_boxes_in_report
                             
-                            # Create/update color box sensors based on actual number of boxes
-                            if not hasattr(self, "color_box_sensors_created") or not self.color_box_sensors_created:
-                                self._create_color_box_sensors(num_boxes)
-                            
-                            # Process all color boxes (supports multiple ACE Pro devices)
-                            for box_index, color_box_data in enumerate(data["data"]["multi_color_box"]):
-                                # Save the box data for future use (using box_index as key)
-                                if not hasattr(self, "latest_color_box_data"):
-                                    self.latest_color_box_data = {}
+                            # Update max if we've seen more boxes than before
+                            if num_boxes_in_report > self.max_detected_boxes:
+                                logger.info(f"Detected {num_boxes_in_report} ACE Pro color box(es) - increased from {self.max_detected_boxes}")
+                                self.max_detected_boxes = num_boxes_in_report
                                 
+                                # Create/update color box sensors for new maximum
+                                if not hasattr(self, "color_box_sensors_created") or not self.color_box_sensors_created:
+                                    self._create_color_box_sensors(self.max_detected_boxes)
+                            else:
+                                logger.info(f"Processing {num_boxes_in_report} ACE Pro color box(es) in current report (max seen: {self.max_detected_boxes})")
+                                
+                                # Ensure sensors exist for all boxes we've seen, even if not in this report
+                                if not hasattr(self, "color_box_sensors_created") or not self.color_box_sensors_created:
+                                    self._create_color_box_sensors(self.max_detected_boxes)
+                            
+                            # Initialize storage for color box data if needed
+                            if not hasattr(self, "latest_color_box_data"):
+                                self.latest_color_box_data = {}
+                            
+                            # Process color boxes in this report (may be partial)
+                            # We only update boxes that are present, without invalidating others
+                            for box_index, color_box_data in enumerate(data["data"]["multi_color_box"]):
                                 # Update our stored box data with box index
+                                # This preserves data for boxes not in this report
                                 if box_index not in self.latest_color_box_data:
                                     self.latest_color_box_data[box_index] = {}
+                                    logger.debug(f"Initializing storage for color box {box_index}")
                                 
                                 self.latest_color_box_data[box_index].update(color_box_data)
                                 
