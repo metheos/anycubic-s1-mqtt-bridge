@@ -2362,6 +2362,12 @@ class AnycubicMqttBridge:
                     data = response.json()
                     logger.info(f"Received HTTP discovery response: {data}")
 
+                    # Check if printer is in cloud mode
+                    if data.get("ctrlType") == "cloud":
+                        logger.warning(
+                            "Printer is set to CLOUD mode. Please set the printer to LAN mode for local control."
+                        )
+
                     # Store basic printer info
                     if "modelId" in data:
                         self.printer_mode_id = data["modelId"]
