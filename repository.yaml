@@ -1,0 +1,3 @@
+name: "Anycubic Add-on for Home Assistant"
+url: "https://github.com/metheos/anycubic-s1-mqtt-bridge"
+maintainer: "metheos"

@@ -1,0 +1,34 @@
+name: "Anycubic S1 MQTT Bridge"
+version: "0.0.1"
+slug: "anycubic_s1_mqtt_bridge"
+description: "Bridge Anycubic S1 -> Home Assistant via MQTT discovery"
+url: "https://github.com/metheos/anycubic-s1-mqtt-bridge"
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+startup: services
+host_network: true
+
+options:
+  anycubic_ip: ""
+  mqtt_broker: "homeassistant.local"
+  mqtt_port: 1883
+  mqtt_user: ""
+  mqtt_pass: ""
+  snapshot_interval_idle: 300
+  snapshot_interval_busy: 30
+  info_update_interval: 30
+
+schema:
+  anycubic_ip: str
+  mqtt_broker: str
+  mqtt_port: int
+  mqtt_user: str?
+  mqtt_pass: password?
+  snapshot_interval_idle: int
+  snapshot_interval_busy: int
+  info_update_interval: int
