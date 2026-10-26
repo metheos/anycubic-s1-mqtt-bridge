@@ -50,6 +50,49 @@ The application uses environment variables for configuration. You can set the fo
 - `SNAPSHOT_INTERVAL_BUSY`: Interval for taking snapshots when printer is busy.
 - `INFO_UPDATE_INTERVAL`: Interval for updating printer information.
 
+For the Home Assistant add-on, the bridge reads the MQTT broker connection
+from the Supervisor MQTT service automatically. The `mqtt_broker`, `mqtt_port`,
+`mqtt_user`, and `mqtt_pass` settings are fallback values for standalone or
+non-Supervisor deployments.
+
+The bridge exposes adjustable nozzle and hotbed targets, main/auxiliary/ACE
+box fan controls, and a Print Speed Mode select in Home Assistant. The speed
+select is available while a print is active; the fan controls range from 0 to
+100 percent.
+
+Anycubic MQTT reports also create `Job Failed` and `Print Problem` binary
+sensors. Their attributes include the reported state, code, action, MQTT type,
+and error message. Known Anycubic messages are translated to Dutch; the source
+text remains in `original_message`. Active sensors follow the latest MQTT report
+and can clear on normal acknowledgements. `Last Print Error` retains the latest
+error details afterward.
+
+### Obico ML
+
+Obico ML is optional and disabled by default. Install and start the Obico ML
+API add-on from [mattjacobson6/ha-addons](https://github.com/mattjacobson6/ha-addons)
+(the `obico-ml-api` folder), then enable Obico ML in this add-on's options. In
+the Supervisor API, the bridge finds the installed **Obico ML** add-on and
+reads its internal hostname automatically. It builds the API URL using HTTP,
+port `3333`, and `/detect/`. The hostname field is only a fallback if
+Supervisor cannot find Obico ML or its internal hostname is unreachable. This
+requires the `manager` Supervisor role.
+The bridge also checks `/hc/` every 30 seconds and marks Obico entities
+unavailable when the backend cannot be reached.
+
+When the printer camera is available, the bridge creates an Obico communication
+switch, failure binary sensor, confidence sensor, detection image, threshold
+slider, and interval slider in Home Assistant. Obico entities are grouped under
+a separate `Obico ML` child device. The threshold ranges from `0` to `1` in
+`0.01` steps (default `0.2`); the interval ranges from `1` to `3600` seconds
+(default `30`). Both slider values are retained by MQTT across add-on restarts.
+Detection only runs while the
+printer state is `busy`. When Obico detects a failure during `busy`, the bridge
+presses the existing Pause Print button once for that failure. It will not
+send another pause until a clean detection or the printer leaves `busy`. The
+Obico communication switch still pauses detection without restarting the
+add-on.
+
 ## Docker Setup
 
 To run the application using Docker, you can use the provided `Dockerfile` and `docker-compose.yml`.

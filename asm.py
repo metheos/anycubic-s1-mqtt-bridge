@@ -8,9 +8,35 @@ import sys
 import ssl  # Add this import at the top of your file
 from dotenv import load_dotenv
 import requests
+from bridge_helpers import (
+    classify_mqtt_error,
+    discover_mqtt_settings,
+    get_firmware_version,
+    get_color_box_id,
+    global_filament_index,
+    normalize_printer_device_name,
+    normalize_box_slot_index,
+    PRINT_SPEED_MODE_NAMES,
+    print_speed_mode_name,
+    translate_mqtt_error_message,
+)
 from threading import Thread, Event
 import traceback
 import random
+from obico import (
+    DEFAULT_OBICO_API_HOST,
+    DEFAULT_OBICO_API_URL,
+    build_print_job_state,
+    build_api_url,
+    check_api_health,
+    detect_image_with_fallback,
+    discover_obico_api_url,
+    merge_print_data,
+    printer_is_busy,
+    resolve_print_job_state,
+    resolve_printer_state,
+    should_press_pause_button,
+)
 
 # Load configuration from .env file if present
 load_dotenv()
@@ -40,10 +66,29 @@ VERSION = "2026.02.08"
 ANYCUBIC_S1_IP = get_required_env("ANYCUBIC_S1_IP", required=True)
 
 # Home Assistant MQTT Broker - these are required
-HA_BROKER = get_required_env("HA_BROKER", required=True)
+HA_BROKER = get_required_env("HA_BROKER", "homeassistant.local")
 HA_PORT = int(get_required_env("HA_PORT", "1883"))
 HA_USER = get_required_env("HA_USER")  # Optional
 HA_PASS = get_required_env("HA_PASS")  # Optional
+OBICO_ENABLED = get_required_env("OBICO_ENABLED", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+    "on",
+)
+OBICO_API_URL = build_api_url(
+    get_required_env("OBICO_API_URL", DEFAULT_OBICO_API_HOST)
+)
+SUPERVISOR_TOKEN = get_required_env("SUPERVISOR_TOKEN", "")
+OBICO_DETECTION_INTERVAL = int(get_required_env("OBICO_DETECTION_INTERVAL", "30"))
+OBICO_THRESHOLD = float(get_required_env("OBICO_THRESHOLD", "0.2"))
+
+if OBICO_ENABLED and not OBICO_API_URL:
+    raise ValueError("OBICO_API_URL is required when Obico ML is enabled")
+if OBICO_DETECTION_INTERVAL < 1:
+    raise ValueError("OBICO_DETECTION_INTERVAL must be at least 1 second")
+if not 0 <= OBICO_THRESHOLD <= 1:
+    raise ValueError("OBICO_THRESHOLD must be between 0 and 1")
 
 # MQTT Configuration
 KEEPALIVE_INTERVAL = int(get_required_env("KEEPALIVE_INTERVAL", "60"))
@@ -91,6 +136,14 @@ class AnycubicMqttBridge:
 
         self.info_update_interval = int(get_required_env("INFO_UPDATE_INTERVAL", "30"))
         self.snapshot_thread = None
+        self.obico_thread = None
+        self.obico_entities_created = False
+        self.obico_detection_interval = OBICO_DETECTION_INTERVAL
+        self.obico_threshold = OBICO_THRESHOLD
+        self.obico_pause_latched = False
+        self.obico_active = Event()
+        if OBICO_ENABLED:
+            self.obico_active.set()
         self.info_thread = None
         self.connection_monitor_thread = None
         self.printer_state = "unknown"  # Track the printer state
@@ -105,6 +158,10 @@ class AnycubicMqttBridge:
         self.reconnect_delay = 1  # Initial delay in seconds
         self.connection_healthy = Event()  # Event to signal healthy connection
         self.snapshot_enabled = Event()  # Event to control snapshot worker
+        self.discovered_color_box_ids = set()
+        self.discovered_color_box_firmware = {}
+        self.latest_color_box_data = {}
+        self.legacy_color_box_cleanup_done = False
 
         # Initialize with empty values - we'll get them from discovery or env vars
         self.printer_mode_id = get_required_env("PRINTER_MODE_ID", None)
@@ -126,18 +183,56 @@ class AnycubicMqttBridge:
             f"Using printer configuration: Model={self.printer_model}, ModeID={self.printer_mode_id}, DeviceID={self.printer_device_id}"
         )
 
+        self.ha_mqtt_settings, mqtt_lookup_result = discover_mqtt_settings(
+            SUPERVISOR_TOKEN,
+            {
+                "broker": HA_BROKER,
+                "port": HA_PORT,
+                "user": HA_USER,
+                "password": HA_PASS,
+            },
+        )
+        logger.info("Home Assistant MQTT lookup: %s", mqtt_lookup_result)
+
         self.setup_clients()
 
     def get_device_info(self):
         """Return consistent device info dictionary for Home Assistant entities"""
         device_id = self.printer_cn if self.printer_cn else "anycubic_printer"
-        return {
+        model = getattr(self, "device_model", None)
+        if not model or model == "Unknown":
+            model = getattr(self, "printer_model", None) or "Unknown"
+        device_info = {
             "identifiers": [device_id],
-            "name": getattr(self, "device_name", "Anycubic Printer"),
-            "model": getattr(self, "device_model", "Unknown"),
+            "name": normalize_printer_device_name(
+                getattr(self, "device_name", None), model
+            ),
+            "model": model,
             "manufacturer": "Anycubic",
-            "sw_version": getattr(self, "printer_version", "Unknown"),
         }
+        firmware = get_firmware_version(
+            {"version": getattr(self, "printer_version", None)}, ("version",)
+        )
+        if firmware:
+            device_info["sw_version"] = firmware
+        if self.printer_cn:
+            device_info["serial_number"] = self.printer_cn
+        return device_info
+
+    def get_color_box_device_info(self, box_index, firmware=None):
+        printer_device_id = self.get_device_info()["identifiers"][0]
+        box_number = int(box_index)
+        device_info = {
+            "identifiers": [f"{printer_device_id}_ace_box_{box_index}"],
+            "name": f"ACE Pro Box {box_number}",
+            "manufacturer": "Anycubic",
+            "model": "ACE Pro Filament System",
+            "via_device": printer_device_id,
+        }
+        firmware = get_firmware_version({"firmware": firmware}, ("firmware",))
+        if firmware:
+            device_info["sw_version"] = firmware
+        return device_info
 
     def discover_printer_with_retry(self):
         """Discover the printer with exponential backoff retry, continuing indefinitely"""
@@ -186,8 +281,10 @@ class AnycubicMqttBridge:
 
         # Set up Home Assistant MQTT Client
         self.ha_client = mqtt.Client(client_id="anycubic_bridge_ha")
-        if HA_USER and HA_PASS:
-            self.ha_client.username_pw_set(HA_USER, HA_PASS)
+        if self.ha_mqtt_settings["user"] and self.ha_mqtt_settings["password"]:
+            self.ha_client.username_pw_set(
+                self.ha_mqtt_settings["user"], self.ha_mqtt_settings["password"]
+            )
         self.ha_client.on_connect = self.on_ha_connect
         self.ha_client.on_disconnect = self.on_ha_disconnect
 
@@ -208,9 +305,15 @@ class AnycubicMqttBridge:
         while running:
             try:
                 logger.info(
-                    f"Connecting to Home Assistant broker at {HA_BROKER}:{HA_PORT}"
+                    "Connecting to Home Assistant broker at %s:%s",
+                    self.ha_mqtt_settings["broker"],
+                    self.ha_mqtt_settings["port"],
                 )
-                self.ha_client.connect(HA_BROKER, HA_PORT, keepalive=KEEPALIVE_INTERVAL)
+                self.ha_client.connect(
+                    self.ha_mqtt_settings["broker"],
+                    self.ha_mqtt_settings["port"],
+                    keepalive=KEEPALIVE_INTERVAL,
+                )
                 self.ha_client.loop_start()
 
                 logger.info(
@@ -421,6 +524,7 @@ class AnycubicMqttBridge:
                 "availability_topic": f"homeassistant/sensor/{topic_prefix}_connectivity/availability",
                 "json_attributes_topic": f"homeassistant/sensor/{topic_prefix}_connectivity/state",
                 "icon": "mdi:network",
+                "entity_category": "diagnostic",
                 "device": device_info,
             }
 
@@ -488,8 +592,7 @@ class AnycubicMqttBridge:
 
             # Create print controls
             if not hasattr(self, "print_controls_created") or not self.print_controls_created:
-                self._create_print_controls()
-                self.print_controls_created = True
+                self.print_controls_created = self._create_print_controls()
         else:
             logger.error(f"Failed to connect to Anycubic broker, return code: {rc}")
             self.anycubic_connection_state = ConnectionState.ERROR
@@ -636,6 +739,9 @@ class AnycubicMqttBridge:
             logger.info("Connected to Home Assistant MQTT broker")
             self.ha_connection_state = ConnectionState.CONNECTED
             self.update_connectivity_status()
+            if not self.legacy_color_box_cleanup_done:
+                self.cleanup_legacy_color_box_entities()
+                self.legacy_color_box_cleanup_done = True
             # Run retained cleanup only once per installation
             try:
                 if not self._has_migration_cleanup_done():
@@ -644,6 +750,12 @@ class AnycubicMqttBridge:
                     self._mark_migration_cleanup_done()
             except Exception as e:
                 logger.debug(f"Cleanup flag check failed: {e}")
+            self.print_controls_created = self._create_print_controls()
+            if OBICO_ENABLED:
+                self._create_obico_entities()
+                self._start_obico_worker()
+            elif not OBICO_ENABLED:
+                self._cleanup_obico_discovery_entities()
         else:
             logger.error(
                 f"Failed to connect to Home Assistant broker, return code: {rc}"
@@ -668,6 +780,79 @@ class AnycubicMqttBridge:
         except Exception as e:
             logger.warning(f"Failed to clear old discovery entities: {e}")
 
+    def cleanup_legacy_color_box_entities(self):
+        topic_prefix = self.get_topic_prefix()
+        for unique_id in (
+            f"{topic_prefix}_serial_number",
+            f"{topic_prefix}_target_nozzle_temp",
+            f"{topic_prefix}_target_hotbed_temp",
+            f"{topic_prefix}_printer_camera_url",
+        ):
+            self.ha_client.publish(
+                f"homeassistant/sensor/{unique_id}/config",
+                "",
+                retain=True,
+            )
+
+        for unique_id in (
+            f"{topic_prefix}_color_box_status",
+            f"{topic_prefix}_color_box_temp",
+            f"{topic_prefix}_active_filament_slot",
+            f"{topic_prefix}_fan_speed",
+            f"{topic_prefix}_aux_fan_speed",
+            f"{topic_prefix}_box_fan_level",
+        ):
+            self.ha_client.publish(
+                f"homeassistant/sensor/{unique_id}/config",
+                "",
+                retain=True,
+            )
+
+        for box_index in range(8):
+            for suffix in ("status", "temp", "active_filament_slot"):
+                unique_id = f"{topic_prefix}_color_box_{box_index}_{suffix}"
+                self.ha_client.publish(
+                    f"homeassistant/sensor/{unique_id}/config",
+                    "",
+                    retain=True,
+                )
+            for slot_index in range(box_index * 4, (box_index + 1) * 4):
+                for entity_type in ("type", "color"):
+                    unique_id = f"{topic_prefix}_filament_{slot_index}_{entity_type}"
+                    self.ha_client.publish(
+                        f"homeassistant/sensor/{unique_id}/config",
+                        "",
+                        retain=True,
+                    )
+
+        for component, unique_id in (
+            ("switch", f"{topic_prefix}_obico_communication"),
+            ("number", f"{topic_prefix}_obico_threshold"),
+            ("number", f"{topic_prefix}_obico_detection_interval"),
+            ("binary_sensor", f"{topic_prefix}_obico_failure"),
+            ("sensor", f"{topic_prefix}_obico_confidence"),
+            ("image", f"{topic_prefix}_obico_detection"),
+        ):
+            self.ha_client.publish(
+                f"homeassistant/{component}/{unique_id}/config",
+                "",
+                retain=True,
+            )
+
+        for slot_index in range(8):
+            for entity_type in ("type", "color"):
+                self.ha_client.publish(
+                    f"homeassistant/sensor/{topic_prefix}_filament_{slot_index}_{entity_type}/config",
+                    "",
+                    retain=True,
+                )
+                for old_box_index in range(8):
+                    self.ha_client.publish(
+                        f"homeassistant/sensor/{topic_prefix}_color_box_{old_box_index}_filament_{slot_index}_{entity_type}/config",
+                        "",
+                        retain=True,
+                    )
+
     def _has_migration_cleanup_done(self):
         try:
             return os.path.isfile(self._cleanup_flag_file)
@@ -681,12 +866,384 @@ class AnycubicMqttBridge:
         except Exception:
             pass
 
+    def _cleanup_obico_discovery_entities(self):
+        topic_prefix = self.get_topic_prefix()
+        for component, unique_id in (
+            ("switch", f"{topic_prefix}_obico_communication"),
+            ("number", f"{topic_prefix}_obico_threshold"),
+            ("binary_sensor", f"{topic_prefix}_obico_failure"),
+            ("sensor", f"{topic_prefix}_obico_confidence"),
+            ("image", f"{topic_prefix}_obico_detection"),
+        ):
+            self.ha_client.publish(
+                f"homeassistant/{component}/{unique_id}/config", "", retain=True
+            )
+        for topic in (
+            f"homeassistant/sensor/{topic_prefix}/obico",
+            f"homeassistant/sensor/{topic_prefix}/obico/availability",
+            f"homeassistant/sensor/{topic_prefix}/obico/image",
+            f"homeassistant/sensor/{topic_prefix}/obico/image_state",
+            f"homeassistant/switch/{topic_prefix}_obico/state",
+            f"homeassistant/number/{topic_prefix}_obico_threshold/state",
+            f"homeassistant/number/{topic_prefix}_obico_threshold/set",
+            f"homeassistant/number/{topic_prefix}_obico_detection_interval/state",
+            f"homeassistant/number/{topic_prefix}_obico_detection_interval/set",
+        ):
+            self.ha_client.publish(topic, "", retain=True)
+
+    def _create_obico_entities(self):
+        if self.obico_entities_created or not self.ha_client.is_connected():
+            return
+
+        topic_prefix = self.get_topic_prefix()
+        printer_device_info = self.get_device_info()
+        printer_device_id = printer_device_info["identifiers"][0]
+        device_info = {
+            "identifiers": [f"{printer_device_id}_obico"],
+            "name": "Obico ML",
+            "manufacturer": "Obico",
+            "model": "Print Failure Detection",
+            "via_device": printer_device_id,
+        }
+        state_topic = f"homeassistant/sensor/{topic_prefix}/obico"
+        availability_topic = f"homeassistant/sensor/{topic_prefix}/obico/availability"
+        switch_state_topic = f"homeassistant/switch/{topic_prefix}_obico/state"
+        switch_command_topic = f"homeassistant/switch/{topic_prefix}_obico/set"
+        threshold_state_topic = f"homeassistant/number/{topic_prefix}_obico_threshold/state"
+        threshold_command_topic = f"homeassistant/number/{topic_prefix}_obico_threshold/set"
+        interval_state_topic = f"homeassistant/number/{topic_prefix}_obico_detection_interval/state"
+        interval_command_topic = f"homeassistant/number/{topic_prefix}_obico_detection_interval/set"
+        entities = (
+            (
+                "switch",
+                f"{topic_prefix}_obico_communication",
+                {
+                    "name": "Obico ML Communication",
+                    "state_topic": switch_state_topic,
+                    "command_topic": switch_command_topic,
+                    "payload_on": "ON",
+                    "payload_off": "OFF",
+                    "state_on": "ON",
+                    "state_off": "OFF",
+                    "availability_topic": availability_topic,
+                    "icon": "mdi:robot",
+                    "device": device_info,
+                },
+            ),
+            (
+                "number",
+                f"{topic_prefix}_obico_threshold",
+                {
+                    "name": "Obico ML Detection Threshold",
+                    "state_topic": threshold_state_topic,
+                    "command_topic": threshold_command_topic,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.01,
+                    "mode": "slider",
+                    "retain": True,
+                    "availability_topic": availability_topic,
+                    "icon": "mdi:tune-variant",
+                    "device": device_info,
+                },
+            ),
+            (
+                "number",
+                f"{topic_prefix}_obico_detection_interval",
+                {
+                    "name": "Obico ML Detection Interval",
+                    "state_topic": interval_state_topic,
+                    "command_topic": interval_command_topic,
+                    "min": 1,
+                    "max": 3600,
+                    "step": 1,
+                    "mode": "slider",
+                    "unit_of_measurement": "s",
+                    "retain": True,
+                    "availability_topic": availability_topic,
+                    "icon": "mdi:timer-cog-outline",
+                    "device": device_info,
+                },
+            ),
+            (
+                "binary_sensor",
+                f"{topic_prefix}_obico_failure",
+                {
+                    "name": "Obico ML Failure Detected",
+                    "state_topic": state_topic,
+                    "value_template": "{{ 'ON' if value_json.error_detected else 'OFF' }}",
+                    "payload_on": "ON",
+                    "payload_off": "OFF",
+                    "device_class": "problem",
+                    "availability_topic": availability_topic,
+                    "device": device_info,
+                },
+            ),
+            (
+                "sensor",
+                f"{topic_prefix}_obico_confidence",
+                {
+                    "name": "Obico ML Failure Confidence",
+                    "state_topic": state_topic,
+                    "value_template": "{{ value_json.avg_confidence }}",
+                    "unit_of_measurement": "%",
+                    "state_class": "measurement",
+                    "availability_topic": availability_topic,
+                    "icon": "mdi:chart-line",
+                    "device": device_info,
+                },
+            ),
+            (
+                "image",
+                f"{topic_prefix}_obico_detection",
+                {
+                    "name": "Obico ML Detection Image",
+                    "state_topic": f"{state_topic}/image_state",
+                    "image_topic": f"{state_topic}/image",
+                    "content_type": "image/jpeg",
+                    "availability_topic": availability_topic,
+                    "device": device_info,
+                },
+            ),
+        )
+
+        for component, unique_id, config in entities:
+            config["unique_id"] = unique_id
+            self.ha_client.publish(
+                f"homeassistant/{component}/{unique_id}/config",
+                json.dumps(config),
+                retain=True,
+            )
+
+        self.ha_client.subscribe(switch_command_topic)
+        self.ha_client.message_callback_add(
+            switch_command_topic, self._on_obico_switch_command
+        )
+        self.ha_client.message_callback_add(
+            threshold_command_topic, self._on_obico_threshold_command
+        )
+        self.ha_client.subscribe(threshold_command_topic)
+        self.ha_client.message_callback_add(
+            interval_command_topic, self._on_obico_interval_command
+        )
+        self.ha_client.subscribe(interval_command_topic)
+        self.ha_client.publish(
+            switch_state_topic,
+            "ON" if self.obico_active.is_set() else "OFF",
+            retain=True,
+        )
+        self.ha_client.publish(
+            threshold_state_topic,
+            f"{self.obico_threshold:g}",
+            retain=True,
+        )
+        self.ha_client.publish(
+            interval_state_topic,
+            str(self.obico_detection_interval),
+            retain=True,
+        )
+        self.ha_client.publish(availability_topic, "offline", retain=True)
+        self.obico_entities_created = True
+        logger.info("Created Obico ML entities in Home Assistant")
+
+    def _on_obico_switch_command(self, client, userdata, msg):
+        payload = msg.payload.decode("utf-8").strip().upper()
+        if payload == "ON":
+            self.obico_active.set()
+        elif payload == "OFF":
+            self.obico_active.clear()
+        else:
+            logger.warning("Ignoring invalid Obico switch value: %s", payload)
+            return
+        client.publish(msg.topic.rsplit("/", 1)[0] + "/state", payload, retain=True)
+
+    def _on_obico_threshold_command(self, client, userdata, msg):
+        try:
+            threshold = float(msg.payload.decode("utf-8").strip())
+        except (UnicodeDecodeError, ValueError):
+            logger.warning("Ignoring invalid Obico threshold value: %r", msg.payload)
+            return
+
+        if not 0.0 <= threshold <= 1.0:
+            logger.warning("Ignoring out-of-range Obico threshold: %s", threshold)
+            return
+
+        self.obico_threshold = threshold
+        topic = f"homeassistant/number/{self.get_topic_prefix()}_obico_threshold/state"
+        self.ha_client.publish(topic, f"{threshold:g}", retain=True)
+        logger.info("Updated Obico ML detection threshold to %.2f", threshold)
+
+    def _on_obico_interval_command(self, client, userdata, msg):
+        try:
+            requested = float(msg.payload.decode("utf-8").strip())
+            if not requested.is_integer():
+                raise ValueError("interval must be a whole number")
+            interval = int(requested)
+        except (UnicodeDecodeError, ValueError):
+            logger.warning("Ignoring invalid Obico interval value: %r", msg.payload)
+            return
+
+        if not 1 <= interval <= 3600:
+            logger.warning("Ignoring out-of-range Obico interval: %s", interval)
+            return
+
+        self.obico_detection_interval = interval
+        topic = (
+            f"homeassistant/number/{self.get_topic_prefix()}"
+            "_obico_detection_interval/state"
+        )
+        self.ha_client.publish(topic, str(interval), retain=True)
+        logger.info("Updated Obico ML detection interval to %s seconds", interval)
+
+    def _start_obico_worker(self):
+        if not OBICO_ENABLED:
+            return
+        if self.obico_thread is None or not self.obico_thread.is_alive():
+            self.obico_thread = Thread(target=self.obico_worker, daemon=True)
+            self.obico_thread.start()
+            logger.info(
+                "Started Obico ML worker with interval %ss",
+                self.obico_detection_interval,
+            )
+
+    def obico_worker(self):
+        topic_prefix = self.get_topic_prefix()
+        state_topic = f"homeassistant/sensor/{topic_prefix}/obico"
+        availability_topic = f"{state_topic}/availability"
+        next_detection = 0
+        next_health_check = 0
+        api_available = False
+        previous_health_state = None
+        previous_discovery_result = None
+        api_url = OBICO_API_URL
+        prefer_fallback_api = False
+
+        while running:
+            current_time = time.monotonic()
+            if not printer_is_busy(self.printer_state):
+                self.obico_pause_latched = False
+
+            if current_time >= next_health_check:
+                if previous_discovery_result is None:
+                    logger.info(
+                        "Searching Home Assistant Supervisor for the installed Obico ML add-on"
+                    )
+                discovered_api_url, discovery_result = discover_obico_api_url(
+                    SUPERVISOR_TOKEN, OBICO_API_URL
+                )
+                if discovery_result != previous_discovery_result:
+                    logger.info("Supervisor Obico lookup: %s", discovery_result)
+                    previous_discovery_result = discovery_result
+                if prefer_fallback_api:
+                    discovered_api_url = OBICO_API_URL
+                if discovered_api_url != api_url:
+                    api_url = discovered_api_url
+                    logger.info("Using Obico ML API at %s", api_url)
+                api_available = check_api_health(api_url)
+                health_state = "online" if api_available else "offline"
+                self.ha_client.publish(
+                    availability_topic, health_state, retain=True
+                )
+                if health_state != previous_health_state:
+                    if api_available:
+                        logger.info("Obico ML API is reachable at %s", api_url)
+                    else:
+                        logger.warning(
+                            "Obico ML API is unavailable at %s; install and start the Obico ML add-on",
+                            api_url,
+                        )
+                    previous_health_state = health_state
+                next_health_check = current_time + 30
+
+            if (
+                not api_available
+                or
+                not self.obico_active.is_set()
+                or not self.snapshot_enabled.is_set()
+                or not printer_is_busy(self.printer_state)
+                or current_time < next_detection
+            ):
+                time.sleep(1)
+                continue
+
+            try:
+                image_data = self.take_snapshot()
+                if not image_data:
+                    logger.warning("Obico ML skipped: printer snapshot unavailable")
+                else:
+                    logger.info(
+                        "Obico ML sending snapshot: bytes=%d jpeg=%s threshold=%.2f",
+                        len(image_data),
+                        image_data.startswith(b"\xff\xd8"),
+                        self.obico_threshold,
+                    )
+                    result, api_url, used_fallback = detect_image_with_fallback(
+                        image_data,
+                        api_url,
+                        OBICO_API_URL,
+                        self.obico_threshold,
+                    )
+                    if used_fallback:
+                        prefer_fallback_api = True
+                        logger.warning(
+                            "Obico ML auto-discovered hostname failed to connect; switched to fallback API at %s",
+                            api_url,
+                        )
+                    self.ha_client.publish(
+                        state_topic,
+                        json.dumps(
+                            {
+                                "error_detected": result["error_detected"],
+                                "avg_confidence": result["avg_confidence"],
+                                "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            }
+                        ),
+                        retain=True,
+                    )
+                    detection_image = result["image_with_errors"] or image_data
+                    self.ha_client.publish(
+                        f"{state_topic}/image", detection_image, retain=True
+                    )
+                    self.ha_client.publish(
+                        f"{state_topic}/image_state",
+                        time.strftime("%Y-%m-%d %H:%M:%S"),
+                        retain=True,
+                    )
+                    logger.info(
+                        "Obico ML result: detections=%d failure=%s confidence=%s%%",
+                        result["detection_count"],
+                        result["error_detected"],
+                        result["avg_confidence"],
+                    )
+                    if should_press_pause_button(
+                        result["error_detected"],
+                        self.printer_state,
+                        self.obico_pause_latched,
+                    ):
+                        pause_command_topic = (
+                            f"homeassistant/button/{topic_prefix}_pause_print/command"
+                        )
+                        self.ha_client.publish(pause_command_topic, "PRESS")
+                        self.obico_pause_latched = True
+                        logger.warning(
+                            "Obico ML detected a failure; pressing the Pause Print button"
+                        )
+                    elif not result["error_detected"]:
+                        self.obico_pause_latched = False
+            except Exception as e:
+                logger.warning("Obico ML detection failed: %s", e)
+
+            next_detection = time.monotonic() + self.obico_detection_interval
+
     def on_ha_disconnect(self, client, userdata, rc):
         """Handle disconnection from Home Assistant broker"""
         logger.warning(f"Disconnected from Home Assistant broker with code {rc}")
         self.ha_connection_state = ConnectionState.DISCONNECTED
         self.update_connectivity_status()
         self.connection_healthy.clear()
+        self.print_controls_created = False
+        self.temperature_fan_controls_created = False
+        self.obico_entities_created = False
 
         # Let the connection monitor handle reconnection with backoff
 
@@ -1167,6 +1724,11 @@ class AnycubicMqttBridge:
             try:
                 data = json.loads(payload)
 
+                message_type = str(data.get("type") or "").strip().lower()
+                error_report = classify_mqtt_error(data)
+                if message_type in {"print", "error", "info"} or error_report["print_problem"]:
+                    self._publish_mqtt_error_state(data)
+
                 # Check for registered message handlers
                 if hasattr(self, "message_handlers"):
                     for handler in self.message_handlers:
@@ -1247,39 +1809,36 @@ class AnycubicMqttBridge:
                 if "type" in data and data["type"] == "info":
                     printer_data = data["data"]
                     logger.debug(f"Received printer info: {json.dumps(printer_data)}")
+                    topic_prefix = self.get_topic_prefix()
                     self.device_name = printer_data.get(
                         "printerName", "Anycubic Printer"
                     )
-                    self.device_model = printer_data.get("model", "Unknown")
+                    self.device_model = printer_data.get("model") or getattr(
+                        self, "printer_model", None
+                    ) or "Unknown"
+                    firmware_version = get_firmware_version(
+                        printer_data,
+                        (
+                            "version",
+                            "fw_version",
+                            "firmware_version",
+                            "firmwareVersion",
+                            "fwVersion",
+                            "firmware",
+                        ),
+                    )
+                    if firmware_version:
+                        self.printer_version = firmware_version
 
                     # Define the device for all sensors
                     device_info = self.get_device_info()
 
                     # Update device info with any additional discovered properties
-                    if "version" in printer_data:
-                        self.printer_version = printer_data["version"]
-                        device_info["sw_version"] = printer_data["version"]
-
-                    if "printerName" in printer_data:
-                        device_info["name"] = printer_data["printerName"]
+                    if firmware_version:
+                        device_info["sw_version"] = firmware_version
 
                     # Create individual sensors
                     sensors = []
-
-                    # Add Serial Number (CN) sensor
-                    if self.printer_cn:
-                        # Use prefix for consistency
-                        topic_prefix = self.get_topic_prefix()
-                        sensors.append(
-                            {
-                                "name": "Printer Serial Number",
-                                "unique_id": f"{topic_prefix}_serial_number",
-                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
-                                "value_template": "{{ value_json.printer_cn }}",
-                                "icon": "mdi:barcode",
-                                "device": device_info,
-                            }
-                        )
 
                     # State sensor
                     if "state" in printer_data:
@@ -1310,20 +1869,6 @@ class AnycubicMqttBridge:
                             }
                         )
 
-                        # Target hotbed temperature
-                        sensors.append(
-                            {
-                                "name": "Target Hotbed Temperature",
-                                "unique_id": f"{topic_prefix}_target_hotbed_temp",
-                                "state_topic": f"homeassistant/sensor/{topic_prefix}/temperature",
-                                "value_template": "{{ value_json.target_hotbed_temp }}",
-                                "unit_of_measurement": "°C",
-                                "device_class": "temperature",
-                                "icon": "mdi:thermometer-chevron-up",
-                                "device": device_info,
-                            }
-                        )
-
                         # Current nozzle temperature
                         sensors.append(
                             {
@@ -1338,59 +1883,6 @@ class AnycubicMqttBridge:
                             }
                         )
 
-                        # Target nozzle temperature
-                        sensors.append(
-                            {
-                                "name": "Target Nozzle Temperature",
-                                "unique_id": f"{topic_prefix}_target_nozzle_temp",
-                                "state_topic": f"homeassistant/sensor/{topic_prefix}/temperature",
-                                "value_template": "{{ value_json.target_nozzle_temp }}",
-                                "unit_of_measurement": "°C",
-                                "device_class": "temperature",
-                                "icon": "mdi:thermometer-chevron-up",
-                                "device": device_info,
-                            }
-                        )
-
-                    # Fan speed sensors
-                    if "fan_speed_pct" in printer_data:
-                        sensors.append(
-                            {
-                                "name": "Fan Speed",
-                                "unique_id": f"{topic_prefix}_fan_speed",
-                                "state_topic": f"homeassistant/sensor/{topic_prefix}/fan",
-                                "value_template": "{{ value_json.fan_speed_pct }}",
-                                "unit_of_measurement": "%",
-                                "icon": "mdi:fan",
-                                "device": device_info,
-                            }
-                        )
-
-                    if "aux_fan_speed_pct" in printer_data:
-                        sensors.append(
-                            {
-                                "name": "Aux Fan Speed",
-                                "unique_id": f"{topic_prefix}_aux_fan_speed",
-                                "state_topic": f"homeassistant/sensor/{topic_prefix}/fan",
-                                "value_template": "{{ value_json.aux_fan_speed_pct }}",
-                                "unit_of_measurement": "%",
-                                "icon": "mdi:fan",
-                                "device": device_info,
-                            }
-                        )
-
-                    if "box_fan_level" in printer_data:  
-                        sensors.append(
-                            {
-                                "name": "Box Fan Level",
-                                "unique_id": f"{topic_prefix}_box_fan_level",
-                                "state_topic": f"homeassistant/sensor/{topic_prefix}/fan",
-                                "value_template": "{{ value_json.box_fan_level }}",
-                                "icon": "mdi:fan",
-                                "device": device_info,
-                            }
-                        )
-
                     # Print speed mode
                     if "print_speed_mode" in printer_data:
                         sensors.append(
@@ -1398,7 +1890,7 @@ class AnycubicMqttBridge:
                                 "name": "Print Speed Mode",
                                 "unique_id": f"{topic_prefix}_print_speed_mode",
                                 "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
-                                "value_template": "{{ value_json.print_speed_mode }}",
+                                "value_template": "{{ value_json.print_speed_mode_name }}",
                                 "icon": "mdi:speedometer",
                                 "device": device_info,
                             }
@@ -1413,6 +1905,7 @@ class AnycubicMqttBridge:
                                 "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
                                 "value_template": "{{ value_json.ip_address }}",
                                 "icon": "mdi:ip-network",
+                                "entity_category": "diagnostic",
                                 "device": device_info,
                             }
                         )
@@ -1420,18 +1913,6 @@ class AnycubicMqttBridge:
                     # Store the stream URL for snapshot use if available
                     if "urls" in printer_data and "rtspUrl" in printer_data["urls"]:
                         self.stream_url = printer_data["urls"]["rtspUrl"]
-
-                        # Add a URL sensor
-                        sensors.append(
-                            {
-                                "name": "Printer Camera URL",
-                                "unique_id": f"{topic_prefix}_printer_camera_url",
-                                "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
-                                "value_template": "{{ value_json.camera_url }}",
-                                "icon": "mdi:cctv",
-                                "device": device_info,
-                            }
-                        )
 
                         # Create a simple image entity for the snapshot
                         topic_prefix = self.get_topic_prefix()
@@ -1466,6 +1947,10 @@ class AnycubicMqttBridge:
                                 f"Started snapshot thread with interval {self.snapshot_interval}s"
                             )
 
+                        if OBICO_ENABLED:
+                            self._create_obico_entities()
+                            self._start_obico_worker()
+
                     # Publish all sensor configurations
                     for sensor in sensors:
                         discovery_topic = (
@@ -1478,19 +1963,31 @@ class AnycubicMqttBridge:
                     # Create the combined state message
                     topic_prefix = self.get_topic_prefix()
 
-                    # Save the printer state for the snapshot worker
-                    if "state" in printer_data:
-                        self.printer_state = printer_data["state"]
-                        logger.debug(f"Updated printer state: {self.printer_state}")
+                    # Keep the last known state when an info report omits it.
+                    reported_state = printer_data.get("state")
+                    self.printer_state = resolve_printer_state(
+                        reported_state,
+                        self.current_print_state,
+                        self.printer_state,
+                    )
+                    logger.debug(f"Updated printer state: {self.printer_state}")
 
                     # Also publish a separate fan update if fan data is available
-                    if "fan_speed_pct" in printer_data or "aux_fan_speed_pct" in printer_data:
+                    if any(
+                        key in printer_data
+                        for key in (
+                            "fan_speed_pct",
+                            "aux_fan_speed_pct",
+                            "box_fan_level",
+                        )
+                    ):
                         fan_state = {
                             "fan_speed_pct": printer_data.get("fan_speed_pct", 0),
                             "aux_fan_speed_pct": printer_data.get("aux_fan_speed_pct", 0),
                             "box_fan_level": printer_data.get("box_fan_level", 0) if "box_fan_level" in printer_data else 0,
                             "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                         }
+                        self.latest_fan_state = dict(fan_state)
                         
                         # Publish fan data to Home Assistant
                         self.ha_client.publish(
@@ -1510,6 +2007,7 @@ class AnycubicMqttBridge:
                             "target_nozzle_temp": printer_data.get("temp", {}).get("target_nozzle_temp", 0),
                             "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                         }
+                        self.latest_temperature_state = dict(temp_state)
                         
                         # Publish temperature data to Home Assistant
                         self.ha_client.publish(
@@ -1530,25 +2028,24 @@ class AnycubicMqttBridge:
                         if not hasattr(self, "latest_print_data"):
                             self.latest_print_data = {}
                         
-                        # Update our stored print data with project info
-                        self.latest_print_data.update(project_data)
+                        # Merge project reports because some omit progress fields.
+                        self.latest_print_data = merge_print_data(
+                            self.latest_print_data,
+                            project_data,
+                            self.current_print_state,
+                        )
                         
                         # Create/update print sensors if not already created
                         if not hasattr(self, "print_sensors_created") or not self.print_sensors_created:
                             self._create_print_sensors()
                         
                         # Create print job state update
-                        print_state = {
-                            "filename": project_data.get("filename", ""),
-                            "progress": project_data.get("progress", 0),
-                            "current_layer": project_data.get("curr_layer", 0),
-                            "total_layers": project_data.get("total_layers", 0),
-                            "print_time": project_data.get("print_time", 0),
-                            "remaining_time": project_data.get("remain_time", 0),
-                            "material_usage": project_data.get("supplies_usage", 0),
-                            "state": self.current_print_state,  # Use the current print state
-                            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        }
+                        print_state = build_print_job_state(
+                            self.latest_print_data, self.current_print_state
+                        )
+                        print_state["last_updated"] = time.strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
                         
                         # Publish print job data to Home Assistant
                         self.ha_client.publish(
@@ -1561,17 +2058,20 @@ class AnycubicMqttBridge:
                         
                         # Create print controls if needed
                         if not hasattr(self, "print_controls_created") or not self.print_controls_created:
-                            self._create_print_controls()
-                            self.print_controls_created = True
+                            self.print_controls_created = self._create_print_controls()
 
                     state_data = {
-                        "state": printer_data.get("state", "unknown"),
+                        "state": self.printer_state,
                         "print_speed_mode": printer_data.get("print_speed_mode", 0),
+                        "print_speed_mode_name": print_speed_mode_name(
+                            printer_data.get("print_speed_mode")
+                        ),
                         "ip_address": printer_data.get("ip", ""),
                         "camera_url": printer_data.get("urls", {}).get("rtspUrl", ""),
                         "printer_cn": self.printer_cn if self.printer_cn else "",
                         "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                     }
+                    self.latest_printer_state = dict(state_data)
 
                     # Publish the state to the CN-specific topic
                     self.ha_client.publish(
@@ -1605,6 +2105,7 @@ class AnycubicMqttBridge:
                                 "target_nozzle_temp": temp_data.get("target_nozzle_temp", 0),
                                 "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                             }
+                            self.latest_temperature_state = dict(temp_state)
                             
                             # Publish temperature data to Home Assistant
                             self.ha_client.publish(
@@ -1622,6 +2123,34 @@ class AnycubicMqttBridge:
                     logger.info(f"Received print job report: action={data.get('action', 'unknown')}, state={data.get('state', 'unknown')}")
                     logger.debug(f"Print job report data: {json.dumps(data)}")
                     try:
+                        previous_print_state = self.current_print_state
+                        self.current_print_state = resolve_print_job_state(
+                            data.get("action"),
+                            data.get("state"),
+                            self.current_print_state,
+                        )
+                        if self.current_print_state == "printing":
+                            self.printer_state = "busy"
+                        elif self.current_print_state == "paused":
+                            self.printer_state = "paused"
+                        elif self.current_print_state == "free":
+                            self.printer_state = "free"
+                        elif self.current_print_state in {"leveling", "preheating"}:
+                            self.printer_state = self.current_print_state
+
+                        topic_prefix = self.get_topic_prefix()
+                        state_data = dict(getattr(self, "latest_printer_state", {}))
+                        state_data["state"] = self.printer_state
+                        state_data["last_updated"] = time.strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
+                        self.latest_printer_state = state_data
+                        self.ha_client.publish(
+                            f"homeassistant/sensor/{topic_prefix}/state",
+                            json.dumps(state_data),
+                            retain=True,
+                        )
+
                         if "data" in data and data["data"]:
                             print_data = data["data"]
                             
@@ -1630,10 +2159,15 @@ class AnycubicMqttBridge:
                                 self.latest_print_data = {}
                             
                             # Update our stored print data
-                            self.latest_print_data.update(print_data)
-                            
-                            # Update the current print state
-                            self.current_print_state = data.get("state", "unknown")
+                            self.latest_print_data = merge_print_data(
+                                self.latest_print_data,
+                                print_data,
+                                self.current_print_state,
+                                reset=(
+                                    data.get("action") == "start"
+                                    and previous_print_state != "printing"
+                                ),
+                            )
                             
                             # Create/update print sensors if not already created
                             if not hasattr(self, "print_sensors_created") or not self.print_sensors_created:
@@ -1643,17 +2177,12 @@ class AnycubicMqttBridge:
                             topic_prefix = self.get_topic_prefix()
                             
                             # Create a state update with print job information
-                            print_state = {
-                                "filename": print_data.get("filename", ""),
-                                "progress": print_data.get("progress", 0),
-                                "current_layer": print_data.get("curr_layer", 0),
-                                "total_layers": print_data.get("total_layers", 0),
-                                "print_time": print_data.get("print_time", 0),
-                                "remaining_time": print_data.get("remain_time", 0),
-                                "material_usage": print_data.get("supplies_usage", 0),
-                                "state": self.current_print_state,  # Use the current print state
-                                "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            }
+                            print_state = build_print_job_state(
+                                self.latest_print_data, self.current_print_state
+                            )
+                            print_state["last_updated"] = time.strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
                             
                             # Publish print job data to Home Assistant
                             self.ha_client.publish(
@@ -1665,13 +2194,17 @@ class AnycubicMqttBridge:
                             logger.debug(f"Published print job update: {json.dumps(print_state)}")
                             
                             # If we receive a completion message, clear the print job data
-                            if data.get("state") == "done":
+                            if data.get("action") in {
+                                "stop",
+                                "cancel",
+                                "finish",
+                                "complete",
+                            }:
                                 logger.info("Print job completed")
                             
                             # Create print controls
                             if not hasattr(self, "print_controls_created") or not self.print_controls_created:
-                                self._create_print_controls()
-                                self.print_controls_created = True
+                                self.print_controls_created = self._create_print_controls()
 
                     except Exception as e:
                         logger.error(f"Error processing print job data: {e}")
@@ -1686,114 +2219,107 @@ class AnycubicMqttBridge:
                             # Get topic prefix for publishing
                             topic_prefix = self.get_topic_prefix()
                             
-                            # Get the number of boxes in this report
-                            num_boxes_in_report = len(data["data"]["multi_color_box"])
-                            
-                            # Track the maximum number of boxes we've ever seen
-                            if not hasattr(self, "max_detected_boxes"):
-                                self.max_detected_boxes = 0
-                            
-                            # Track the number from the previous report for comparison
-                            if not hasattr(self, "previous_report_box_count"):
-                                self.previous_report_box_count = 0
-                            
-                            # Debug log when the number of boxes in the report differs from previous
-                            if self.previous_report_box_count != num_boxes_in_report:
-                                logger.debug(f"Multicolor box count changed: previous report had {self.previous_report_box_count} box(es), current report has {num_boxes_in_report} box(es)")
-                            
-                            self.previous_report_box_count = num_boxes_in_report
-                            
-                            # Update max if we've seen more boxes than before
-                            if num_boxes_in_report > self.max_detected_boxes:
-                                logger.info(f"Detected {num_boxes_in_report} ACE Pro color box(es) - increased from {self.max_detected_boxes}")
-                                self.max_detected_boxes = num_boxes_in_report
-                                
-                                # Create/update color box sensors for new maximum
-                                if not hasattr(self, "color_box_sensors_created") or not self.color_box_sensors_created:
-                                    self._create_color_box_sensors(self.max_detected_boxes)
-                            else:
-                                logger.info(f"Processing {num_boxes_in_report} ACE Pro color box(es) in current report (max seen: {self.max_detected_boxes})")
-                                
-                                # Ensure sensors exist for all boxes we've seen, even if not in this report
-                                if not hasattr(self, "color_box_sensors_created") or not self.color_box_sensors_created:
-                                    self._create_color_box_sensors(self.max_detected_boxes)
-                            
-                            # Initialize storage for color box data if needed
-                            if not hasattr(self, "latest_color_box_data"):
-                                self.latest_color_box_data = {}
-                            
-                            # Process color boxes in this report (may be partial)
-                            # We only update boxes that are present, without invalidating others
-                            for box_index, color_box_data in enumerate(data["data"]["multi_color_box"]):
-                                # Update our stored box data with box index
-                                # This preserves data for boxes not in this report
-                                if box_index not in self.latest_color_box_data:
-                                    self.latest_color_box_data[box_index] = {}
-                                    logger.debug(f"Initializing storage for color box {box_index}")
-                                
-                                self.latest_color_box_data[box_index].update(color_box_data)
-                                
-                                # Create a state update with color box information
+                            box_items = data["data"]["multi_color_box"]
+                            identified_boxes = [
+                                (get_color_box_id(box_data, fallback_index), box_data)
+                                for fallback_index, box_data in enumerate(box_items)
+                            ]
+                            box_ids = {box_id for box_id, _ in identified_boxes}
+                            boxes_to_refresh = set()
+                            for box_id, color_box_data in identified_boxes:
+                                latest_box_data = self.latest_color_box_data.setdefault(
+                                    box_id, {}
+                                )
+                                latest_box_data.update(color_box_data)
+                                firmware = get_firmware_version(
+                                    latest_box_data,
+                                    (
+                                        "firmware",
+                                        "firmware_version",
+                                        "firmwareVersion",
+                                        "fw_version",
+                                        "fwVersion",
+                                        "version",
+                                    ),
+                                )
+                                if box_id not in self.discovered_color_box_ids or (
+                                    firmware
+                                    and self.discovered_color_box_firmware.get(box_id)
+                                    != firmware
+                                ):
+                                    boxes_to_refresh.add(box_id)
+                                if firmware:
+                                    self.discovered_color_box_firmware[box_id] = firmware
+
+                            if boxes_to_refresh:
+                                logger.info(
+                                    "Publishing ACE Pro device info for box IDs: %s",
+                                    sorted(boxes_to_refresh),
+                                )
+                                self._create_color_box_sensors(boxes_to_refresh)
+                                self.discovered_color_box_ids.update(boxes_to_refresh)
+
+                            for box_id, color_box_data in identified_boxes:
+                                latest_box_data = self.latest_color_box_data[box_id]
                                 box_state = {
-                                    "box_index": box_index,
-                                    "status": color_box_data.get("status", 0),
-                                    "temperature": color_box_data.get("temp", 0),
-                                    "loaded_slot": color_box_data.get("loaded_slot", -1),
-                                    "auto_feed": color_box_data.get("auto_feed", 0),
+                                    "box_id": box_id,
+                                    "status": latest_box_data.get("status", 0),
+                                    "temperature": latest_box_data.get("temp", 0),
+                                    "loaded_slot": latest_box_data.get("loaded_slot", -1),
+                                    "auto_feed": latest_box_data.get("auto_feed", 0),
                                     "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                                 }
-                                
-                                # Publish box state data to Home Assistant with box index
                                 self.ha_client.publish(
-                                    f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}",
+                                    f"homeassistant/sensor/{topic_prefix}/color_box_{box_id}",
                                     json.dumps(box_state),
-                                    retain=True
+                                    retain=True,
                                 )
-                                
-                                # For backward compatibility, also publish first box data without index
-                                if box_index == 0:
+                                if box_id == 0:
                                     self.ha_client.publish(
                                         f"homeassistant/sensor/{topic_prefix}/color_box",
                                         json.dumps(box_state),
-                                        retain=True
+                                        retain=True,
                                     )
-                                
-                                # Process filament slot information
-                                if "slots" in color_box_data:
-                                    slots = color_box_data["slots"]
-                                    for slot in slots:
-                                        slot_index = slot.get("index", 0)
-                                        slot_data = {
-                                            "box_index": box_index,
-                                            "slot_index": slot_index,
-                                            "type": slot.get("type", "Unknown"),
-                                            "status": slot.get("status", 0),
-                                            "color_rgb": slot.get("color", [128, 128, 128]),
-                                            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                        }
-                                        
-                                        # Add hex color for easier use in Home Assistant
-                                        if "color" in slot:
-                                            rgb = slot["color"]
-                                            if len(rgb) == 3:
-                                                slot_data["color_hex"] = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
-                                        
-                                        # Publish slot data to Home Assistant with box index
-                                        self.ha_client.publish(
-                                            f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}_filament_slot_{slot_index}",
-                                            json.dumps(slot_data),
-                                            retain=True
+
+                                for slot_position, slot in enumerate(
+                                    latest_box_data.get("slots", [])
+                                ):
+                                    local_slot = normalize_box_slot_index(
+                                        slot.get("index", slot_position), box_id
+                                    )
+                                    if local_slot is None:
+                                        logger.debug(
+                                            "Ignoring invalid slot index %s for ACE Pro box %s",
+                                            slot.get("index"),
+                                            box_id,
                                         )
-                                        
-                                        # For backward compatibility, also publish first box filament data without box index
-                                        if box_index == 0:
-                                            self.ha_client.publish(
-                                                f"homeassistant/sensor/{topic_prefix}/filament_slot_{slot_index}",
-                                                json.dumps(slot_data),
-                                                retain=True
-                                            )
-                                
-                                logger.debug(f"Published multicolor box {box_index} update with {len(color_box_data.get('slots', []))} slots")
+                                        continue
+                                    global_slot = global_filament_index(
+                                        box_id, local_slot
+                                    )
+                                    slot_data = {
+                                        "box_id": box_id,
+                                        "box_slot_index": local_slot,
+                                        "slot_index": global_slot,
+                                        "type": slot.get("type", "Unknown"),
+                                        "status": slot.get("status", 0),
+                                        "color_rgb": slot.get("color", [128, 128, 128]),
+                                        "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    }
+                                    rgb = slot.get("color")
+                                    if isinstance(rgb, list) and len(rgb) == 3:
+                                        slot_data["color_hex"] = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+                                    self.ha_client.publish(
+                                        f"homeassistant/sensor/{topic_prefix}/filament_slot_{global_slot}",
+                                        json.dumps(slot_data),
+                                        retain=True,
+                                    )
+
+                                logger.debug(
+                                    "Published multicolor box %s update with %d slots",
+                                    box_id,
+                                    len(latest_box_data.get("slots", [])),
+                                )
                     except Exception as e:
                         logger.error(f"Error processing multicolor box data: {e}")
                         logger.debug(traceback.format_exc())
@@ -1821,6 +2347,7 @@ class AnycubicMqttBridge:
                                 "box_fan_level": fan_data.get("box_fan_level", 0),
                                 "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                             }
+                            self.latest_fan_state = dict(fan_state)
                             
                             # Publish fan data to Home Assistant
                             self.ha_client.publish(
@@ -1966,18 +2493,29 @@ class AnycubicMqttBridge:
             logger.debug(traceback.format_exc())
             return False
 
-    def _create_color_box_sensors(self, num_boxes):
-        """Create MultiColor Box related sensors in Home Assistant for the detected boxes"""
+    def _create_color_box_sensors(self, box_ids):
+        """Create Home Assistant entities for detected physical ACE Pro boxes."""
         # Get topic prefix and device info
         topic_prefix = self.get_topic_prefix()
-        device_info = self.get_device_info()
         
-        # Create sensors only for the actual number of boxes present
-        for box_index in range(num_boxes):
+        for box_index in sorted(set(box_ids)):
+            box_number = box_index
+            firmware = get_firmware_version(
+                getattr(self, "latest_color_box_data", {}).get(box_index, {}),
+                (
+                    "firmware",
+                    "firmware_version",
+                    "firmwareVersion",
+                    "fw_version",
+                    "fwVersion",
+                    "version",
+                ),
+            )
+            device_info = self.get_color_box_device_info(box_index, firmware)
             # List of box sensors to create for this specific box
             sensors = [
                 {
-                    "name": f"MultiColor Box {box_index} Status",
+                    "name": f"ACE Pro Box {box_number} Status",
                     "unique_id": f"{topic_prefix}_color_box_{box_index}_status",
                     "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}",
                     "value_template": "{{ 'Connected' if value_json.status == 1 else 'Disconnected' }}",
@@ -1985,7 +2523,7 @@ class AnycubicMqttBridge:
                     "device": device_info,
                 },
                 {
-                    "name": f"MultiColor Box {box_index} Temperature",
+                    "name": f"ACE Pro Box {box_number} Temperature",
                     "unique_id": f"{topic_prefix}_color_box_{box_index}_temp",
                     "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}",
                     "value_template": "{{ value_json.temperature }}",
@@ -1995,7 +2533,7 @@ class AnycubicMqttBridge:
                     "device": device_info,
                 },
                 {
-                    "name": f"Active Filament Slot (Box {box_index})",
+                    "name": f"ACE Pro Box {box_number} Active Slot",
                     "unique_id": f"{topic_prefix}_color_box_{box_index}_active_filament_slot",
                     "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}",
                     "value_template": "{{ value_json.loaded_slot if value_json.loaded_slot >= 0 else 'None' }}",
@@ -2004,95 +2542,43 @@ class AnycubicMqttBridge:
                 },
             ]
             
-            # Create individual filament slot sensors for this box (8 slots per box for ACE Pro)
-            for i in range(8):
-                # Filament type sensor
-                sensors.append({
-                    "name": f"Box {box_index} Filament {i} Type",
-                    "unique_id": f"{topic_prefix}_color_box_{box_index}_filament_{i}_type",
-                    "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}_filament_slot_{i}",
-                    "value_template": "{{ value_json.type }}",
-                    "icon": "mdi:spool",
-                    "device": device_info,
-                })
-                
-                # Filament color sensor (using RGB format for HA)
-                sensors.append({
-                    "name": f"Box {box_index} Filament {i} Color",
-                    "unique_id": f"{topic_prefix}_color_box_{box_index}_filament_{i}_color",
-                    "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box_{box_index}_filament_slot_{i}",
-                    "value_template": "{{ value_json.color_hex }}",
-                    "icon": "mdi:palette",
-                    "device": device_info,
-                })
+            for local_slot in range(4):
+                global_slot = global_filament_index(box_index, local_slot)
+                slot_topic = f"homeassistant/sensor/{topic_prefix}/filament_slot_{global_slot}"
+                sensors.extend(
+                    (
+                        {
+                            "name": f"Filament {global_slot} Type",
+                            "unique_id": f"{topic_prefix}_filament_{global_slot}_type",
+                            "state_topic": slot_topic,
+                            "value_template": "{{ value_json.type }}",
+                            "icon": "mdi:spool",
+                            "device": device_info,
+                        },
+                        {
+                            "name": f"Filament {global_slot} Color",
+                            "unique_id": f"{topic_prefix}_filament_{global_slot}_color",
+                            "state_topic": slot_topic,
+                            "value_template": "{{ value_json.color_hex }}",
+                            "icon": "mdi:palette",
+                            "device": device_info,
+                        },
+                    )
+                )
             
             # Publish all sensor configurations for this box
             for sensor in sensors:
                 discovery_topic = f"homeassistant/sensor/{sensor['unique_id']}/config"
                 self.ha_client.publish(discovery_topic, json.dumps(sensor), retain=True)
-            
-            # For backward compatibility, also create sensors without box index for the first box
-            if box_index == 0:
-                backward_compat_sensors = [
-                    {
-                        "name": "MultiColor Box Status",
-                        "unique_id": f"{topic_prefix}_color_box_status",
-                        "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box",
-                        "value_template": "{{ 'Connected' if value_json.status == 1 else 'Disconnected' }}",
-                        "icon": "mdi:printer-3d-nozzle",
-                        "device": device_info,
-                    },
-                    {
-                        "name": "MultiColor Box Temperature",
-                        "unique_id": f"{topic_prefix}_color_box_temp",
-                        "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box",
-                        "value_template": "{{ value_json.temperature }}",
-                        "unit_of_measurement": "°C",
-                        "device_class": "temperature",
-                        "icon": "mdi:thermometer",
-                        "device": device_info,
-                    },
-                    {
-                        "name": "Active Filament Slot",
-                        "unique_id": f"{topic_prefix}_active_filament_slot",
-                        "state_topic": f"homeassistant/sensor/{topic_prefix}/color_box",
-                        "value_template": "{{ value_json.loaded_slot if value_json.loaded_slot >= 0 else 'None' }}",
-                        "icon": "mdi:numeric",
-                        "device": device_info,
-                    },
-                ]
-                
-                # Add backward compatible filament sensors for the first box
-                for i in range(8):
-                    backward_compat_sensors.append({
-                        "name": f"Filament {i} Type",
-                        "unique_id": f"{topic_prefix}_filament_{i}_type",
-                        "state_topic": f"homeassistant/sensor/{topic_prefix}/filament_slot_{i}",
-                        "value_template": "{{ value_json.type }}",
-                        "icon": "mdi:spool",
-                        "device": device_info,
-                    })
-                    
-                    backward_compat_sensors.append({
-                        "name": f"Filament {i} Color",
-                        "unique_id": f"{topic_prefix}_filament_{i}_color",
-                        "state_topic": f"homeassistant/sensor/{topic_prefix}/filament_slot_{i}",
-                        "value_template": "{{ value_json.color_hex }}",
-                        "icon": "mdi:palette",
-                        "device": device_info,
-                    })
-                
-                # Publish backward compatibility sensors
-                for sensor in backward_compat_sensors:
-                    discovery_topic = f"homeassistant/sensor/{sensor['unique_id']}/config"
-                    self.ha_client.publish(discovery_topic, json.dumps(sensor), retain=True)
         
-        # Mark sensors as created
-        self.color_box_sensors_created = True
-        logger.info(f"Created MultiColor Box sensors in Home Assistant ({num_boxes} device(s), 8 slots each) with backward compatibility")
+        logger.info("Created ACE Pro sensors for box IDs: %s", sorted(set(box_ids)))
 
     def _create_print_controls(self):
         """Create buttons in Home Assistant to control print jobs"""
+        if not self.ha_client or not self.ha_client.is_connected():
+            logger.debug("Deferring print controls until Home Assistant MQTT connects")
+            return False
+
         # Get topic prefix and device info
         topic_prefix = self.get_topic_prefix()
         device_info = self.get_device_info()
@@ -2150,6 +2636,428 @@ class AnycubicMqttBridge:
         )
         
         logger.info("Created print control buttons in Home Assistant")
+        self._create_temperature_fan_controls()
+        self._create_print_error_sensors()
+        return True
+
+    def _create_print_error_sensors(self):
+        if getattr(self, "print_error_sensors_created", False):
+            return
+
+        topic_prefix = self.get_topic_prefix()
+        state_topic = f"homeassistant/sensor/{topic_prefix}/print_error"
+        device_info = self.get_device_info()
+        sensors = (
+            {
+                "name": "Job Failed",
+                "unique_id": f"{topic_prefix}_job_failed",
+                "value_template": "{{ 'ON' if value_json.job_failed else 'OFF' }}",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "device_class": "problem",
+                "json_attributes_topic": state_topic,
+                "state_topic": state_topic,
+                "icon": "mdi:printer-3d-alert",
+                "device": device_info,
+            },
+            {
+                "name": "Print Problem",
+                "unique_id": f"{topic_prefix}_print_problem",
+                "value_template": "{{ 'ON' if value_json.print_problem else 'OFF' }}",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "device_class": "problem",
+                "json_attributes_topic": state_topic,
+                "state_topic": state_topic,
+                "icon": "mdi:alert-circle-outline",
+                "device": device_info,
+            },
+        )
+        for sensor in sensors:
+            self.ha_client.publish(
+                f"homeassistant/binary_sensor/{sensor['unique_id']}/config",
+                json.dumps(sensor),
+                retain=True,
+            )
+
+        last_error_config = {
+            "name": "Last Print Error",
+            "unique_id": f"{topic_prefix}_last_print_error",
+            "state_topic": f"homeassistant/sensor/{topic_prefix}/last_print_error",
+            "value_template": "{{ value_json.message or value_json.state or value_json.code }}",
+            "json_attributes_topic": f"homeassistant/sensor/{topic_prefix}/last_print_error",
+            "icon": "mdi:message-alert-outline",
+            "entity_category": "diagnostic",
+            "device": device_info,
+        }
+        self.ha_client.publish(
+            f"homeassistant/sensor/{last_error_config['unique_id']}/config",
+            json.dumps(last_error_config),
+            retain=True,
+        )
+        self.print_error_sensors_created = True
+
+    def _publish_mqtt_error_state(self, message):
+        self._create_print_error_sensors()
+        error_state = classify_mqtt_error(message)
+        error_state.update(
+            {"type": message.get("type"), "action": message.get("action")}
+        )
+        original_message = str(error_state.get("message") or "")
+        error_state["original_message"] = original_message
+        error_state["message"] = translate_mqtt_error_message(original_message)
+        error_state.update(
+            {
+                "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+        self.ha_client.publish(
+            f"homeassistant/sensor/{self.get_topic_prefix()}/print_error",
+            json.dumps(error_state),
+            retain=True,
+        )
+        if error_state["print_problem"]:
+            self.ha_client.publish(
+                f"homeassistant/sensor/{self.get_topic_prefix()}/last_print_error",
+                json.dumps(error_state),
+                retain=True,
+            )
+            logger.warning(
+                "Printer MQTT problem: type=%s action=%s state=%s code=%s message=%s",
+                error_state["type"],
+                error_state["action"],
+                error_state["state"],
+                error_state["code"],
+                error_state["message"],
+            )
+
+    def _create_temperature_fan_controls(self):
+        if getattr(self, "temperature_fan_controls_created", False):
+            return
+
+        topic_prefix = self.get_topic_prefix()
+        device_info = self.get_device_info()
+        temperature_state_topic = f"homeassistant/sensor/{topic_prefix}/temperature"
+        fan_state_topic = f"homeassistant/sensor/{topic_prefix}/fan"
+        speed_state_topic = f"homeassistant/sensor/{topic_prefix}/state"
+        speed_command_topic = f"homeassistant/select/{topic_prefix}_print_speed_mode_control/set"
+        speed_select = {
+            "name": "Print Speed Mode Control",
+            "unique_id": f"{topic_prefix}_print_speed_mode_control",
+            "state_topic": speed_state_topic,
+            "value_template": "{{ value_json.print_speed_mode_name }}",
+            "command_topic": speed_command_topic,
+            "options": list(PRINT_SPEED_MODE_NAMES.values()),
+            "availability": [
+                {
+                    "topic": speed_state_topic,
+                    "value_template": (
+                        "{{ 'online' if value_json.state in "
+                        "['busy', 'printing', 'paused', 'pausing', 'resuming', 'preheating'] "
+                        "else 'offline' }}"
+                    ),
+                }
+            ],
+            "icon": "mdi:speedometer",
+            "device": device_info,
+        }
+        self.ha_client.publish(
+            f"homeassistant/select/{speed_select['unique_id']}/config",
+            json.dumps(speed_select),
+            retain=True,
+        )
+        self.ha_client.message_callback_add(
+            speed_command_topic, self._on_print_speed_mode_command
+        )
+        self.ha_client.subscribe(speed_command_topic)
+
+        temperature_controls = (
+            {
+                "name": "Target Nozzle Temperature",
+                "key": "target_nozzle_temp",
+                "maximum": 320,
+                "icon": "mdi:printer-3d-nozzle",
+                "handler": self._on_nozzle_temperature_command,
+            },
+            {
+                "name": "Target Hotbed Temperature",
+                "key": "target_hotbed_temp",
+                "maximum": 120,
+                "icon": "mdi:heating-coil",
+                "handler": self._on_hotbed_temperature_command,
+            },
+        )
+        for control in temperature_controls:
+            unique_id = f"{topic_prefix}_{control['key']}_control"
+            command_topic = f"homeassistant/number/{unique_id}/set"
+            config = {
+                "name": control["name"],
+                "unique_id": unique_id,
+                "state_topic": temperature_state_topic,
+                "value_template": f"{{{{ value_json.{control['key']} }}}}",
+                "command_topic": command_topic,
+                "min": 0,
+                "max": control["maximum"],
+                "step": 1,
+                "mode": "slider",
+                "unit_of_measurement": "°C",
+                "device_class": "temperature",
+                "icon": control["icon"],
+                "device": device_info,
+            }
+            self.ha_client.publish(
+                f"homeassistant/number/{unique_id}/config",
+                json.dumps(config),
+                retain=True,
+            )
+            self.ha_client.message_callback_add(command_topic, control["handler"])
+            self.ha_client.subscribe(command_topic)
+
+        fan_controls = (
+            ("Main Fan", "fan_speed_pct", device_info, "mdi:fan"),
+            ("Aux Fan", "aux_fan_speed_pct", device_info, "mdi:fan"),
+            (
+                "Box Fan",
+                "box_fan_level",
+                device_info,
+                "mdi:fan",
+            ),
+        )
+        for name, key, fan_device_info, icon in fan_controls:
+            unique_id = f"{topic_prefix}_{key}_control"
+            command_topic = f"homeassistant/fan/{unique_id}/percentage/set"
+            config = {
+                "name": name,
+                "unique_id": unique_id,
+                "state_topic": fan_state_topic,
+                "state_value_template": (
+                    f"{{{{ 'ON' if value_json.{key} | int(0) > 0 else 'OFF' }}}}"
+                ),
+                "percentage_state_topic": fan_state_topic,
+                "percentage_value_template": f"{{{{ value_json.{key} }}}}",
+                "percentage_command_topic": command_topic,
+                "command_topic": command_topic,
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "speed_range_min": 1,
+                "speed_range_max": 100,
+                "icon": icon,
+                "device": fan_device_info,
+            }
+            self.ha_client.publish(
+                f"homeassistant/fan/{unique_id}/config",
+                json.dumps(config),
+                retain=True,
+            )
+            self.ha_client.message_callback_add(
+                command_topic,
+                lambda client, userdata, msg, fan_key=key: self._on_fan_command(
+                    client, userdata, msg, fan_key
+                ),
+            )
+            self.ha_client.subscribe(command_topic)
+
+        self.temperature_fan_controls_created = True
+        logger.info("Created temperature and fan controls in Home Assistant")
+
+    def _on_print_speed_mode_command(self, client, userdata, msg):
+        option = msg.payload.decode("utf-8").strip()
+        mode = next(
+            (mode for mode, name in PRINT_SPEED_MODE_NAMES.items() if name == option),
+            None,
+        )
+        if mode is None:
+            logger.warning("Ignoring invalid print speed mode: %s", option)
+            return
+
+        active_states = {
+            "busy",
+            "printing",
+            "paused",
+            "pausing",
+            "resuming",
+            "preheating",
+        }
+        if not any(
+            str(state or "").strip().lower() in active_states
+            for state in (
+                getattr(self, "printer_state", None),
+                getattr(self, "current_print_state", None),
+            )
+        ):
+            logger.info("Ignoring print speed mode change while no print is active")
+            return
+
+        print_data = getattr(self, "latest_print_data", {})
+        task_id = next(
+            (
+                str(print_data[key])
+                for key in ("taskid", "project_id", "id")
+                if print_data.get(key) is not None
+            ),
+            "-1",
+        )
+        if not self._publish_anycubic_command(
+            "print",
+            "print",
+            "update",
+            {"taskid": task_id, "settings": {"print_speed_mode": mode}},
+        ):
+            return
+
+        state = dict(getattr(self, "latest_printer_state", {}))
+        state["print_speed_mode"] = mode
+        state["print_speed_mode_name"] = PRINT_SPEED_MODE_NAMES[mode]
+        state["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.latest_printer_state = state
+        self.ha_client.publish(
+            f"homeassistant/sensor/{self.get_topic_prefix()}/state",
+            json.dumps(state),
+            retain=True,
+        )
+
+    def _publish_anycubic_command(self, endpoint, message_type, action, data):
+        if not self.printer_mode_id or not self.printer_device_id:
+            logger.error("Cannot send %s command: Missing printer IDs", endpoint)
+            return False
+
+        import uuid
+
+        payload = {
+            "type": message_type,
+            "action": action,
+            "timestamp": int(time.time() * 1000),
+            "msgid": str(uuid.uuid4()),
+            "data": data,
+        }
+        root = "anycubic/anycubicCloud/v1"
+        topics = (
+            f"{root}/printer/public/{self.printer_mode_id}/{self.printer_device_id}/{endpoint}",
+            f"{root}/pc/printer/{self.printer_mode_id}/{self.printer_device_id}/{endpoint}",
+        )
+        try:
+            for topic in topics:
+                self.anycubic_client.publish(topic, json.dumps(payload))
+            return True
+        except Exception as e:
+            logger.error("Error sending %s command: %s", endpoint, e)
+            return False
+
+    def _on_nozzle_temperature_command(self, client, userdata, msg):
+        self._on_temperature_command("target_nozzle_temp", 320, msg)
+
+    def _on_hotbed_temperature_command(self, client, userdata, msg):
+        self._on_temperature_command("target_hotbed_temp", 120, msg)
+
+    def _on_temperature_command(self, key, maximum, msg):
+        try:
+            requested = float(msg.payload.decode("utf-8").strip())
+            if not requested.is_integer():
+                raise ValueError("temperature must be a whole number")
+            value = int(requested)
+        except (UnicodeDecodeError, ValueError):
+            logger.warning("Ignoring invalid temperature command: %r", msg.payload)
+            return
+
+        if not 0 <= value <= maximum:
+            logger.warning("Ignoring out-of-range %s: %s", key, value)
+            return
+
+        settings = {}
+        current_state = getattr(self, "latest_temperature_state", {})
+        if value != 0:
+            for target_key in ("target_nozzle_temp", "target_hotbed_temp"):
+                current_value = current_state.get(target_key)
+                if current_value is not None:
+                    settings[target_key] = int(current_value)
+        settings[key] = value
+
+        if not self._publish_anycubic_command(
+            "tempature", "tempature", "set", settings
+        ):
+            return
+
+        temperature_state = dict(current_state)
+        temperature_state.setdefault("hotbed_temp", None)
+        temperature_state.setdefault("nozzle_temp", None)
+        temperature_state["target_nozzle_temp"] = settings.get(
+            "target_nozzle_temp", current_state.get("target_nozzle_temp")
+        )
+        temperature_state["target_hotbed_temp"] = settings.get(
+            "target_hotbed_temp", current_state.get("target_hotbed_temp")
+        )
+        temperature_state[key] = value
+        temperature_state["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.latest_temperature_state = temperature_state
+        self.ha_client.publish(
+            f"homeassistant/sensor/{self.get_topic_prefix()}/temperature",
+            json.dumps(temperature_state),
+            retain=True,
+        )
+
+    def _on_fan_command(self, client, userdata, msg, fan_key):
+        try:
+            payload = msg.payload.decode("utf-8").strip().upper()
+            if payload == "ON":
+                value = 100
+            elif payload == "OFF":
+                value = 0
+            else:
+                requested = float(payload)
+                if not requested.is_integer():
+                    raise ValueError("fan speed must be a whole number")
+                value = int(requested)
+        except (UnicodeDecodeError, ValueError):
+            logger.warning("Ignoring invalid fan command: %r", msg.payload)
+            return
+
+        if not 0 <= value <= 100:
+            logger.warning("Ignoring out-of-range fan value: %s", value)
+            return
+
+        task_id = "-1"
+        print_data = getattr(self, "latest_print_data", {})
+        for task_key in ("taskid", "project_id", "id"):
+            if print_data.get(task_key) is not None:
+                task_id = str(print_data[task_key])
+                break
+
+        if fan_key == "fan_speed_pct":
+            fan_data = {
+                key: int(current_value)
+                for key, current_value in getattr(self, "latest_fan_state", {}).items()
+                if key in {"fan_speed_pct", "aux_fan_speed_pct", "box_fan_level"}
+                and current_value is not None
+            }
+            fan_data["fan_speed_pct"] = value
+            fan_data["taskid"] = task_id
+            for action in ("setSpeed", "auto"):
+                if not self._publish_anycubic_command(
+                    "fan", "fan", action, fan_data
+                ):
+                    return
+        else:
+            if not self._publish_anycubic_command(
+                "print",
+                "print",
+                "update",
+                {"taskid": task_id, "settings": {fan_key: value}},
+            ):
+                return
+            if not self._publish_anycubic_command(
+                "fan", "fan", "auto", {fan_key: value}
+            ):
+                return
+
+        fan_state = dict(getattr(self, "latest_fan_state", {}))
+        fan_state[fan_key] = value
+        fan_state["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.latest_fan_state = fan_state
+        self.ha_client.publish(
+            f"homeassistant/sensor/{self.get_topic_prefix()}/fan",
+            json.dumps(fan_state),
+            retain=True,
+        )
 
     def _create_print_preview_entity(self):
         """Create a print preview image entity in Home Assistant"""
@@ -2361,6 +3269,19 @@ class AnycubicMqttBridge:
                 if response.status_code == 200:
                     data = response.json()
                     logger.info(f"Received HTTP discovery response: {data}")
+                    firmware_version = get_firmware_version(
+                        data,
+                        (
+                            "version",
+                            "fw_version",
+                            "firmware_version",
+                            "firmwareVersion",
+                            "fwVersion",
+                            "firmware",
+                        ),
+                    )
+                    if firmware_version:
+                        self.printer_version = firmware_version
 
                     # Check if printer is in cloud mode
                     if data.get("ctrlType") == "cloud":
@@ -2453,6 +3374,19 @@ class AnycubicMqttBridge:
                                             logger.info(
                                                 "Successfully decrypted printer data"
                                             )
+                                            firmware_version = get_firmware_version(
+                                                printer_data,
+                                                (
+                                                    "version",
+                                                    "fw_version",
+                                                    "firmware_version",
+                                                    "firmwareVersion",
+                                                    "fwVersion",
+                                                    "firmware",
+                                                ),
+                                            )
+                                            if firmware_version:
+                                                self.printer_version = firmware_version
 
                                             # Extract connection parameters from decrypted data
                                             if "broker" in printer_data:

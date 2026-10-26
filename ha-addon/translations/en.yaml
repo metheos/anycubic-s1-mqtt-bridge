@@ -1,0 +1,31 @@
+configuration:
+  anycubic_ip:
+    name: Printer IP address
+    description: IP address of the Anycubic Kobra S1.
+  mqtt_broker:
+    name: MQTT broker host
+    description: Hostname or IP address of the Home Assistant MQTT broker.
+  mqtt_port:
+    name: MQTT port
+    description: Network port of the MQTT broker, default 1883.
+  mqtt_user:
+    name: MQTT username
+    description: Leave empty if the MQTT broker does not require a username.
+  mqtt_pass:
+    name: MQTT password
+    description: Leave empty if the MQTT broker does not require a password.
+  snapshot_interval_idle:
+    name: Snapshot interval while idle
+    description: Seconds between snapshots while the printer is idle. Set to 0 to disable snapshots.
+  snapshot_interval_busy:
+    name: Snapshot interval while printing
+    description: Seconds between snapshots while the printer is printing. Set to 0 to disable snapshots.
+  info_update_interval:
+    name: Printer status update interval
+    description: Seconds between status requests to the printer.
+  obico_enabled:
+    name: Enable Obico ML
+    description: Run detection while printing and press the existing Pause Print button when a failure is detected.
+  obico_api_url:
+    name: Obico ML hostname (fallback)
+    description: Used if the Supervisor lookup or discovered hostname is unreachable. Enter a reachable hostname or IP address only; do not include the protocol, port, or API path.

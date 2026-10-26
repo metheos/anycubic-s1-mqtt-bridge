@@ -1,8 +1,8 @@
 name: "Anycubic S1 MQTT Bridge"
-version: "0.0.1"
+version: "0.0.26"
 slug: "anycubic_s1_mqtt_bridge"
 description: "Bridge Anycubic S1 -> Home Assistant via MQTT discovery"
-url: "https://github.com/metheos/anycubic-s1-mqtt-bridge"
+url: "https://github.com/ViperRNMC/anycubic-s1-mqtt-bridge"
 init: false
 arch:
   - aarch64
@@ -12,6 +12,10 @@ arch:
   - i386
 startup: services
 host_network: true
+services:
+  - mqtt:need
+hassio_api: true
+hassio_role: manager
 
 options:
   anycubic_ip: ""
@@ -22,6 +26,8 @@ options:
   snapshot_interval_idle: 300
   snapshot_interval_busy: 30
   info_update_interval: 30
+  obico_enabled: false
+  obico_api_url: "localhost"
 
 schema:
   anycubic_ip: str
@@ -32,3 +38,5 @@ schema:
   snapshot_interval_idle: int
   snapshot_interval_busy: int
   info_update_interval: int
+  obico_enabled: bool
+  obico_api_url: str
