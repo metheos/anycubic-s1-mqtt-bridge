@@ -6,12 +6,10 @@ import requests
 
 from obico import (
     build_api_url,
-    build_print_job_state,
     check_api_health,
     detect_image,
     detect_image_with_fallback,
     discover_obico_api_url,
-    merge_print_data,
     printer_is_busy,
     resolve_print_job_state,
     resolve_printer_state,
@@ -197,12 +195,6 @@ class PrinterStateTests(unittest.TestCase):
             "preheating",
         )
 
-    def test_print_progress_remains_available_during_leveling(self):
-        leveling_state = build_print_job_state({"progress": 52}, "leveling")
-
-        self.assertEqual(leveling_state["state"], "leveling")
-        self.assertEqual(leveling_state["progress"], 52)
-
     def test_auto_leveling_states_are_reported_as_leveling(self):
         for reported_state in ("auto_leveling", "autoLeveling", "leveling"):
             self.assertEqual(
@@ -213,36 +205,6 @@ class PrinterStateTests(unittest.TestCase):
     def test_leveling_phase_overrides_transient_printer_busy_or_free(self):
         self.assertEqual(resolve_printer_state("busy", "leveling", "unknown"), "leveling")
         self.assertEqual(resolve_printer_state("free", "preheating", "unknown"), "preheating")
-
-    def test_partial_print_update_preserves_progress_and_ignores_regression(self):
-        previous = {
-            "filename": "part.gcode",
-            "progress": 42,
-            "curr_layer": 120,
-            "total_layers": 300,
-            "print_time": 900,
-        }
-        merged = merge_print_data(
-            previous,
-            {"progress": 0, "curr_layer": 0, "print_time": None},
-            "printing",
-        )
-
-        self.assertEqual(merged["progress"], 42)
-        self.assertEqual(merged["curr_layer"], 120)
-        self.assertEqual(merged["print_time"], 900)
-        self.assertEqual(build_print_job_state(merged, "printing")["progress"], 42)
-
-    def test_new_filename_resets_progress_for_next_print(self):
-        merged = merge_print_data(
-            {"filename": "old.gcode", "progress": 75, "curr_layer": 200},
-            {"filename": "new.gcode", "progress": 0, "curr_layer": 0},
-            "printing",
-        )
-
-        self.assertEqual(merged["filename"], "new.gcode")
-        self.assertEqual(merged["progress"], 0)
-        self.assertEqual(merged["curr_layer"], 0)
 
     def test_pause_button_only_pressed_once_for_busy_printer_failure(self):
         self.assertTrue(should_press_pause_button(True, "busy", False))

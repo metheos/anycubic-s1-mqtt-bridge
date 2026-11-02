@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import requests
 
 
@@ -13,6 +15,69 @@ MQTT_ERROR_MESSAGE_TRANSLATIONS = {
     "温度过高": "Temperatuur te hoog",
     "用户发起": "Door gebruiker gestart",
 }
+
+
+def merge_print_data(previous_data, incoming_data, print_state, reset=False):
+    merged = {} if reset else dict(previous_data or {})
+    incoming = incoming_data or {}
+    incoming_filename = incoming.get("filename")
+    if (
+        incoming_filename
+        and merged.get("filename")
+        and incoming_filename != merged["filename"]
+    ):
+        merged = {}
+
+    active_print_states = {"printing", "busy", "paused"}
+    progress_fields = {
+        "progress",
+        "curr_layer",
+        "total_layers",
+        "print_time",
+        "supplies_usage",
+    }
+    for key, value in incoming.items():
+        if value is None or (key == "filename" and not value):
+            continue
+        if (
+            print_state in active_print_states
+            and key in progress_fields
+            and key in merged
+        ):
+            try:
+                if float(value) < float(merged[key]):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        merged[key] = value
+    return merged
+
+
+def build_print_job_state(print_data, print_state):
+    remaining_time = print_data.get("remain_time")
+    estimated_completion = None
+    if print_state in {"printing", "busy", "paused"} and remaining_time is not None:
+        try:
+            remaining_minutes = float(remaining_time)
+            if remaining_minutes >= 0:
+                estimated_completion = (
+                    datetime.now(timezone.utc)
+                    + timedelta(minutes=remaining_minutes)
+                ).isoformat()
+        except (OverflowError, TypeError, ValueError):
+            pass
+
+    return {
+        "filename": print_data.get("filename", ""),
+        "progress": print_data.get("progress"),
+        "current_layer": print_data.get("curr_layer"),
+        "total_layers": print_data.get("total_layers"),
+        "print_time": print_data.get("print_time"),
+        "remaining_time": remaining_time,
+        "estimated_completion": estimated_completion,
+        "material_usage": print_data.get("supplies_usage"),
+        "state": print_state,
+    }
 
 
 def print_speed_mode_name(value):

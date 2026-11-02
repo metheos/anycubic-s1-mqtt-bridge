@@ -9,11 +9,13 @@ import ssl  # Add this import at the top of your file
 from dotenv import load_dotenv
 import requests
 from bridge_helpers import (
+    build_print_job_state,
     classify_mqtt_error,
     discover_mqtt_settings,
     get_firmware_version,
     get_color_box_id,
     global_filament_index,
+    merge_print_data,
     normalize_printer_device_name,
     normalize_box_slot_index,
     PRINT_SPEED_MODE_NAMES,
@@ -26,12 +28,10 @@ import random
 from obico import (
     DEFAULT_OBICO_API_HOST,
     DEFAULT_OBICO_API_URL,
-    build_print_job_state,
     build_api_url,
     check_api_health,
     detect_image_with_fallback,
     discover_obico_api_url,
-    merge_print_data,
     printer_is_busy,
     resolve_print_job_state,
     resolve_printer_state,
@@ -3135,6 +3135,15 @@ class AnycubicMqttBridge:
                 "value_template": "{{ value_json.remaining_time }}",
                 "unit_of_measurement": "min",
                 "icon": "mdi:clock-time-eight",
+                "device": device_info,
+            },
+            {
+                "name": "Estimated Completion",
+                "unique_id": f"{topic_prefix}_print_estimated_completion",
+                "state_topic": f"homeassistant/sensor/{topic_prefix}/print_job",
+                "value_template": "{{ value_json.estimated_completion or '' }}",
+                "device_class": "timestamp",
+                "icon": "mdi:calendar-clock",
                 "device": device_info,
             },
             {

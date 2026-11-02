@@ -1,19 +1,71 @@
+from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import Mock, patch
 
 import requests
 
+    build_print_job_state,
 from bridge_helpers import (
     classify_mqtt_error,
     discover_mqtt_settings,
     get_firmware_version,
     global_filament_index,
+    merge_print_data,
     get_color_box_id,
     normalize_printer_device_name,
     normalize_box_slot_index,
     print_speed_mode_name,
     translate_mqtt_error_message,
 )
+
+class PrintJobDataTests(unittest.TestCase):
+    def test_remaining_time_counts_down_and_completion_is_estimated(self):
+        previous = {
+            "filename": "part.gcode",
+            "progress": 42,
+            "curr_layer": 120,
+            "total_layers": 300,
+            "print_time": 900,
+            "remain_time": 150,
+        }
+        merged = merge_print_data(
+            previous,
+            {
+                "progress": 0,
+                "curr_layer": 0,
+                "print_time": None,
+                "remain_time": 136,
+            },
+            "printing",
+        )
+
+        self.assertEqual(merged["progress"], 42)
+        self.assertEqual(merged["curr_layer"], 120)
+        self.assertEqual(merged["print_time"], 900)
+        self.assertEqual(merged["remain_time"], 136)
+
+        before = datetime.now(timezone.utc)
+        state = build_print_job_state(merged, "printing")
+        after = datetime.now(timezone.utc)
+        estimated_completion = datetime.fromisoformat(
+            state["estimated_completion"]
+        )
+
+        self.assertEqual(state["progress"], 42)
+        self.assertGreaterEqual(estimated_completion, before + timedelta(minutes=136))
+        self.assertLessEqual(estimated_completion, after + timedelta(minutes=136))
+
+    def test_new_filename_resets_progress_for_next_print(self):
+        merged = merge_print_data(
+            {"filename": "old.gcode", "progress": 75, "curr_layer": 200},
+            {"filename": "new.gcode", "progress": 0, "curr_layer": 0},
+            "printing",
+        )
+
+        self.assertEqual(merged["filename"], "new.gcode")
+        self.assertEqual(merged["progress"], 0)
+        self.assertEqual(merged["curr_layer"], 0)
+
 
 
 class PrintSpeedModeTests(unittest.TestCase):

@@ -127,56 +127,6 @@ def resolve_print_job_state(action, reported_state, previous_state):
     return previous or "unknown"
 
 
-def merge_print_data(previous_data, incoming_data, print_state, reset=False):
-    merged = {} if reset else dict(previous_data or {})
-    incoming = incoming_data or {}
-    incoming_filename = incoming.get("filename")
-    if (
-        incoming_filename
-        and merged.get("filename")
-        and incoming_filename != merged["filename"]
-    ):
-        merged = {}
-
-    active_print_states = {"printing", "busy", "paused"}
-    progress_fields = {
-        "progress",
-        "curr_layer",
-        "total_layers",
-        "print_time",
-        "remain_time",
-        "supplies_usage",
-    }
-    for key, value in incoming.items():
-        if value is None or (key == "filename" and not value):
-            continue
-        if (
-            print_state in active_print_states
-            and key in progress_fields
-            and key in merged
-        ):
-            try:
-                if float(value) < float(merged[key]):
-                    continue
-            except (TypeError, ValueError):
-                pass
-        merged[key] = value
-    return merged
-
-
-def build_print_job_state(print_data, print_state):
-    return {
-        "filename": print_data.get("filename", ""),
-        "progress": print_data.get("progress"),
-        "current_layer": print_data.get("curr_layer"),
-        "total_layers": print_data.get("total_layers"),
-        "print_time": print_data.get("print_time"),
-        "remaining_time": print_data.get("remain_time"),
-        "material_usage": print_data.get("supplies_usage"),
-        "state": print_state,
-    }
-
-
 def should_press_pause_button(error_detected, printer_state, pause_already_requested):
     return (
         error_detected
