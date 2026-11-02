@@ -60,7 +60,7 @@ logging.basicConfig(
 logger = logging.getLogger("anycubic_mqtt_bridge")
 
 # Application version
-VERSION = "2026.02.08"
+VERSION = "2026.11.02"
 
 # Anycubic S1 IP Address - required
 ANYCUBIC_S1_IP = get_required_env("ANYCUBIC_S1_IP", required=True)
