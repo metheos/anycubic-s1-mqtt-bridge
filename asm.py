@@ -144,6 +144,7 @@ class AnycubicMqttBridge:
         self.obico_detection_interval = OBICO_DETECTION_INTERVAL
         self.obico_threshold = OBICO_THRESHOLD
         self.obico_pause_latched = False
+        self.video_init_success = False
         self.obico_active = Event()
         if OBICO_ENABLED:
             self.obico_active.set()
@@ -732,6 +733,7 @@ class AnycubicMqttBridge:
 
         # Disable snapshots when printer disconnects
         self.snapshot_enabled.clear()
+        self.video_init_success = False
         logger.info("Snapshot worker paused - disconnected from printer")
 
         # Let the connection monitor handle reconnection with backoff
@@ -1524,10 +1526,22 @@ class AnycubicMqttBridge:
 
         # Track the last snapshot time
         last_snapshot_time = 0
+        last_capture_start_attempt = 0
 
         while running and self.stream_url:
             try:
                 current_time = time.time()
+
+                if (
+                    self.snapshot_enabled.is_set()
+                    and not self.video_init_success
+                    and time.monotonic() - last_capture_start_attempt >= 30
+                ):
+                    last_capture_start_attempt = time.monotonic()
+                    if not self.start_video_capture():
+                        logger.warning(
+                            "Could not start printer camera capture; will retry"
+                        )
 
                 # Determine which interval to use based on printer state
                 if hasattr(self, "printer_state") and self.printer_state == "free":
@@ -1923,9 +1937,18 @@ class AnycubicMqttBridge:
                             }
                         )
 
-                    # Store the stream URL for snapshot use if available
-                    if "urls" in printer_data and "rtspUrl" in printer_data["urls"]:
-                        self.stream_url = printer_data["urls"]["rtspUrl"]
+                    # The Slicer starts capture over MQTT, then reads the local HTTP-FLV URL.
+                    camera_urls = printer_data.get("urls")
+                    reported_stream_url = (
+                        camera_urls.get("rtspUrl")
+                        if isinstance(camera_urls, dict)
+                        else None
+                    )
+                    self.stream_url = reported_stream_url or (
+                        f"http://{ANYCUBIC_S1_IP}:18088/flv"
+                    )
+
+                    if self.stream_url:
 
                         # Create a simple image entity for the snapshot
                         topic_prefix = self.get_topic_prefix()
@@ -2080,7 +2103,7 @@ class AnycubicMqttBridge:
                             printer_data.get("print_speed_mode")
                         ),
                         "ip_address": printer_data.get("ip", ""),
-                        "camera_url": printer_data.get("urls", {}).get("rtspUrl", ""),
+                        "camera_url": self.stream_url or "",
                         "printer_cn": self.printer_cn if self.printer_cn else "",
                         "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                     }
