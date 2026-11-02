@@ -82,10 +82,11 @@ unavailable when the backend cannot be reached.
 
 When the printer camera is available, the bridge creates an Obico communication
 switch, failure binary sensor, confidence sensor, detection image, threshold
-slider, and interval slider in Home Assistant. Obico entities are grouped under
-a separate `Obico ML` child device. The threshold ranges from `0` to `1` in
-`0.01` steps (default `0.2`); the interval ranges from `1` to `3600` seconds
-(default `30`). Both slider values are retained by MQTT across add-on restarts.
+slider, and interval select in Home Assistant. Obico entities are grouped under
+a separate `Obico ML` child device. The threshold slider ranges from `0` to `1`
+in `0.01` steps (default `0.2`); the interval select offers `10 s`, `15 s`,
+`30 s`, `1 min`, `2 min`, `5 min`, and `10 min`
+(default `30 s`). Both values are retained by MQTT across add-on restarts.
 Detection only runs while the
 printer state is `busy`. When Obico detects a failure during `busy`, the bridge
 presses the existing Pause Print button once for that failure. It will not

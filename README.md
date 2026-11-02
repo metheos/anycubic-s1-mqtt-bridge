@@ -93,8 +93,8 @@ This requires the add-on's `manager` Supervisor role. The bridge also checks
 cannot be reached.
 
 Obico entities are grouped under a separate `Obico ML` child device in Home
-Assistant. It provides retained sliders for the detection interval (`1–3600`
-seconds; default `30`) and threshold (`0–1`, step `0.01`; default `0.2`); both
+Assistant. It provides a retained interval select (`10 s` through `10 min`,
+default `30 s`) and threshold slider (`0–1`, step `0.01`; default `0.2`); both
 values are restored after add-on restarts. The bridge also registers a
 communication switch, failure binary sensor, confidence sensor, and detection
 image through MQTT discovery. Detection only runs while the printer state is

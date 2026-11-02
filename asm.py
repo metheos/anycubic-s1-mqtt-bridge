@@ -18,6 +18,9 @@ from bridge_helpers import (
     merge_print_data,
     normalize_printer_device_name,
     normalize_box_slot_index,
+    OBICO_INTERVAL_PRESETS,
+    obico_interval_option,
+    parse_obico_interval,
     PRINT_SPEED_MODE_NAMES,
     print_speed_mode_name,
     translate_mqtt_error_message,
@@ -829,6 +832,7 @@ class AnycubicMqttBridge:
             ("switch", f"{topic_prefix}_obico_communication"),
             ("number", f"{topic_prefix}_obico_threshold"),
             ("number", f"{topic_prefix}_obico_detection_interval"),
+            ("select", f"{topic_prefix}_obico_detection_interval_select"),
             ("binary_sensor", f"{topic_prefix}_obico_failure"),
             ("sensor", f"{topic_prefix}_obico_confidence"),
             ("image", f"{topic_prefix}_obico_detection"),
@@ -888,6 +892,7 @@ class AnycubicMqttBridge:
             f"homeassistant/number/{topic_prefix}_obico_threshold/set",
             f"homeassistant/number/{topic_prefix}_obico_detection_interval/state",
             f"homeassistant/number/{topic_prefix}_obico_detection_interval/set",
+            f"homeassistant/select/{topic_prefix}_obico_detection_interval_select/state",
         ):
             self.ha_client.publish(topic, "", retain=True)
 
@@ -905,13 +910,19 @@ class AnycubicMqttBridge:
             "model": "Print Failure Detection",
             "via_device": printer_device_id,
         }
+        self.ha_client.publish(
+            f"homeassistant/number/{topic_prefix}_obico_detection_interval/config",
+            "",
+            retain=True,
+        )
         state_topic = f"homeassistant/sensor/{topic_prefix}/obico"
         availability_topic = f"homeassistant/sensor/{topic_prefix}/obico/availability"
         switch_state_topic = f"homeassistant/switch/{topic_prefix}_obico/state"
         switch_command_topic = f"homeassistant/switch/{topic_prefix}_obico/set"
         threshold_state_topic = f"homeassistant/number/{topic_prefix}_obico_threshold/state"
         threshold_command_topic = f"homeassistant/number/{topic_prefix}_obico_threshold/set"
-        interval_state_topic = f"homeassistant/number/{topic_prefix}_obico_detection_interval/state"
+        interval_state_topic = f"homeassistant/select/{topic_prefix}_obico_detection_interval_select/state"
+        # Keep the former command topic to migrate retained number values.
         interval_command_topic = f"homeassistant/number/{topic_prefix}_obico_detection_interval/set"
         entities = (
             (
@@ -948,17 +959,13 @@ class AnycubicMqttBridge:
                 },
             ),
             (
-                "number",
-                f"{topic_prefix}_obico_detection_interval",
+                "select",
+                f"{topic_prefix}_obico_detection_interval_select",
                 {
                     "name": "Obico ML Detection Interval",
                     "state_topic": interval_state_topic,
                     "command_topic": interval_command_topic,
-                    "min": 1,
-                    "max": 3600,
-                    "step": 1,
-                    "mode": "slider",
-                    "unit_of_measurement": "s",
+                    "options": list(OBICO_INTERVAL_PRESETS),
                     "retain": True,
                     "availability_topic": availability_topic,
                     "icon": "mdi:timer-cog-outline",
@@ -1039,7 +1046,7 @@ class AnycubicMqttBridge:
         )
         self.ha_client.publish(
             interval_state_topic,
-            str(self.obico_detection_interval),
+            obico_interval_option(self.obico_detection_interval),
             retain=True,
         )
         self.ha_client.publish(availability_topic, "offline", retain=True)
@@ -1075,24 +1082,22 @@ class AnycubicMqttBridge:
 
     def _on_obico_interval_command(self, client, userdata, msg):
         try:
-            requested = float(msg.payload.decode("utf-8").strip())
-            if not requested.is_integer():
-                raise ValueError("interval must be a whole number")
-            interval = int(requested)
-        except (UnicodeDecodeError, ValueError):
+            payload = msg.payload.decode("utf-8").strip()
+        except UnicodeDecodeError:
             logger.warning("Ignoring invalid Obico interval value: %r", msg.payload)
             return
 
-        if not 1 <= interval <= 3600:
-            logger.warning("Ignoring out-of-range Obico interval: %s", interval)
+        interval = parse_obico_interval(payload)
+        if interval is None:
+            logger.warning("Ignoring invalid Obico interval value: %r", payload)
             return
 
         self.obico_detection_interval = interval
         topic = (
-            f"homeassistant/number/{self.get_topic_prefix()}"
-            "_obico_detection_interval/state"
+            f"homeassistant/select/{self.get_topic_prefix()}"
+            "_obico_detection_interval_select/state"
         )
-        self.ha_client.publish(topic, str(interval), retain=True)
+        self.ha_client.publish(topic, obico_interval_option(interval), retain=True)
         logger.info("Updated Obico ML detection interval to %s seconds", interval)
 
     def _start_obico_worker(self):

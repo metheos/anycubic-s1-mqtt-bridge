@@ -9,6 +9,15 @@ PRINT_SPEED_MODE_NAMES = {
     2: "Standard",
     3: "Sport",
 }
+OBICO_INTERVAL_PRESETS = {
+    "10 s": 10,
+    "15 s": 15,
+    "30 s": 30,
+    "1 min": 60,
+    "2 min": 120,
+    "5 min": 300,
+    "10 min": 600,
+}
 MQTT_ERROR_MESSAGE_TRANSLATIONS = {
     "耗材不足": "Onvoldoende materialen",
     "设备忙": "Apparaat bezig",
@@ -86,6 +95,32 @@ def print_speed_mode_name(value):
     except (TypeError, ValueError):
         return "Unknown"
     return PRINT_SPEED_MODE_NAMES.get(mode, f"Unknown ({mode})")
+
+
+def obico_interval_option(value):
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        seconds = OBICO_INTERVAL_PRESETS["30 s"]
+    return min(
+        OBICO_INTERVAL_PRESETS,
+        key=lambda option: abs(OBICO_INTERVAL_PRESETS[option] - seconds),
+    )
+
+
+def parse_obico_interval(value):
+    option = str(value or "").strip().lower()
+    for label, seconds in OBICO_INTERVAL_PRESETS.items():
+        if option == label.lower():
+            return seconds
+
+    try:
+        seconds = float(option)
+    except ValueError:
+        return None
+    if not seconds.is_integer() or not 1 <= seconds <= 3600:
+        return None
+    return OBICO_INTERVAL_PRESETS[obico_interval_option(int(seconds))]
 
 
 def get_firmware_version(data, keys):

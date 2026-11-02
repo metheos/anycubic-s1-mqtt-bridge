@@ -4,19 +4,22 @@ from unittest.mock import Mock, patch
 
 import requests
 
-    build_print_job_state,
 from bridge_helpers import (
+    build_print_job_state,
     classify_mqtt_error,
     discover_mqtt_settings,
     get_firmware_version,
     global_filament_index,
-    merge_print_data,
     get_color_box_id,
+    merge_print_data,
     normalize_printer_device_name,
     normalize_box_slot_index,
+    obico_interval_option,
+    parse_obico_interval,
     print_speed_mode_name,
     translate_mqtt_error_message,
 )
+
 
 class PrintJobDataTests(unittest.TestCase):
     def test_remaining_time_counts_down_and_completion_is_estimated(self):
@@ -67,7 +70,6 @@ class PrintJobDataTests(unittest.TestCase):
         self.assertEqual(merged["curr_layer"], 0)
 
 
-
 class PrintSpeedModeTests(unittest.TestCase):
     def test_maps_anycubic_speed_enum(self):
         self.assertEqual(print_speed_mode_name(1), "Silent")
@@ -90,6 +92,20 @@ class DeviceNameTests(unittest.TestCase):
             normalize_printer_device_name("Workshop Printer", "Kobra S1"),
             "Workshop Printer",
         )
+
+
+class ObicoIntervalTests(unittest.TestCase):
+    def test_parses_preset_labels_and_legacy_numeric_values(self):
+        self.assertEqual(parse_obico_interval("1 min"), 60)
+        self.assertEqual(parse_obico_interval("45"), 30)
+        self.assertEqual(parse_obico_interval("0"), None)
+        self.assertEqual(parse_obico_interval("3601"), None)
+
+    def test_formats_current_interval_as_nearest_preset(self):
+        self.assertEqual(obico_interval_option(30), "30 s")
+        self.assertEqual(obico_interval_option(60), "1 min")
+        self.assertEqual(obico_interval_option(1800), "10 min")
+        self.assertEqual(parse_obico_interval("3600"), 600)
 
 
 class FirmwareVersionTests(unittest.TestCase):
