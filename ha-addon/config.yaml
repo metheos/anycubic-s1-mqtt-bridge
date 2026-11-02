@@ -1,5 +1,5 @@
 name: "Anycubic S1 MQTT Bridge"
-version: "0.0.28"
+version: "0.0.29"
 slug: "anycubic_s1_mqtt_bridge"
 description: "Bridge Anycubic S1 -> Home Assistant via MQTT discovery"
 url: "https://github.com/ViperRNMC/anycubic-s1-mqtt-bridge"

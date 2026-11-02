@@ -131,19 +131,17 @@ To use this view:
 
 This view uses elements from https://github.com/piitaya/lovelace-mushroom for the AMS spool visualization and badges.
 
-The live FFmpeg camera is configured in Home Assistant, because add-ons cannot
-create Home Assistant YAML camera entries through MQTT discovery. The bridge
-still uses the stream URL internally for snapshot fallback and publishes
-periodic images as an image entity. Configure the live camera in
-`configuration.yaml` as below; use the printer IP from the add-on settings.
+The bridge discovers a MQTT camera entity that displays the latest periodic
+snapshots; it is not a live stream. For live video, add **Generic Camera** from
+**Settings > Devices & services > Add integration**. Use the `camera_url`
+attribute on the bridge's **Printer State** sensor as the **Stream Source**:
 
+```text
+{{ state_attr('sensor.<printer>_printer_state', 'camera_url') }}
 ```
-camera:
-  - platform: ffmpeg
-    name: "Anycubic S1 Printer Camera"
-    input: "http://<Anycubic S1 IP>:18088/flv"
-    extra_arguments: "-analyzeduration 1000000 -probesize 1000000 -fflags nobuffer -flags low_delay -strict experimental -fflags +genpts+discardcorrupt"
-```
+
+Replace the placeholder with the actual entity ID. Home Assistant must be able
+to reach the stream URL from its own host/network.
 
 You may need to adjust entity IDs to match the ones created by your specific printer.
 

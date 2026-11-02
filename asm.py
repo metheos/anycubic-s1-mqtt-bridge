@@ -753,6 +753,7 @@ class AnycubicMqttBridge:
                     self._mark_migration_cleanup_done()
             except Exception as e:
                 logger.debug(f"Cleanup flag check failed: {e}")
+            self._create_printer_camera_entity()
             self.print_controls_created = self._create_print_controls()
             if OBICO_ENABLED:
                 self._create_obico_entities()
@@ -770,7 +771,7 @@ class AnycubicMqttBridge:
         try:
             topic_prefix = self.get_topic_prefix()
 
-            # Old invalid camera discovery (MQTT camera requires 'topic'; we use image entity instead)
+            # Clear the legacy camera config; the snapshot worker publishes a valid one.
             bad_camera_topic = f"homeassistant/camera/{topic_prefix}_printer_camera/config"
             self.ha_client.publish(bad_camera_topic, "", retain=True)
 
@@ -1560,6 +1561,12 @@ class AnycubicMqttBridge:
                         retain=True,
                     )
 
+                    self.ha_client.publish(
+                        f"homeassistant/camera/{topic_prefix}_printer_camera/image",
+                        image_data,
+                        retain=True,
+                    )
+
                     # Publish state update (timestamp) with prefix
                     self.ha_client.publish(
                         f"homeassistant/image/{topic_prefix}_snapshot/state",
@@ -1853,6 +1860,7 @@ class AnycubicMqttBridge:
                                 "unique_id": f"{topic_prefix}_printer_state",
                                 "state_topic": f"homeassistant/sensor/{topic_prefix}/state",
                                 "value_template": "{{ value_json.state }}",
+                                "json_attributes_template": "{{ {'camera_url': value_json.camera_url} | tojson }}",
                                 "icon": "mdi:printer-3d",
                                 "device": device_info,
                             }
@@ -3090,6 +3098,22 @@ class AnycubicMqttBridge:
         # Mark entity as created
         self.print_preview_created = True
         logger.info("Created print preview image entity in Home Assistant")
+
+    def _create_printer_camera_entity(self):
+        topic_prefix = self.get_topic_prefix()
+        camera_config = {
+            "name": "Printer Camera",
+            "unique_id": f"{topic_prefix}_printer_camera",
+            "topic": f"homeassistant/camera/{topic_prefix}_printer_camera/image",
+            "qos": 0,
+            "device": self.get_device_info(),
+        }
+        self.ha_client.publish(
+            f"homeassistant/camera/{topic_prefix}_printer_camera/config",
+            json.dumps(camera_config),
+            retain=True,
+        )
+        logger.info("Created printer snapshot camera entity in Home Assistant")
 
     def _create_print_sensors(self):
         """Create print job related sensors in Home Assistant"""
