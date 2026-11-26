@@ -1,0 +1,263 @@
+from datetime import datetime, timedelta, timezone
+
+import requests
+
+
+SUPERVISOR_API_URL = "http://supervisor"
+PRINT_SPEED_MODE_NAMES = {
+    1: "Silent",
+    2: "Standard",
+    3: "Sport",
+}
+OBICO_INTERVAL_PRESETS = {
+    "10 s": 10,
+    "15 s": 15,
+    "30 s": 30,
+    "1 min": 60,
+    "2 min": 120,
+    "5 min": 300,
+    "10 min": 600,
+}
+MQTT_ERROR_MESSAGE_TRANSLATIONS = {
+    "耗材不足": "Onvoldoende materialen",
+    "设备忙": "Apparaat bezig",
+    "温度过高": "Temperatuur te hoog",
+    "用户发起": "Door gebruiker gestart",
+}
+
+
+def merge_print_data(previous_data, incoming_data, print_state, reset=False):
+    merged = {} if reset else dict(previous_data or {})
+    incoming = incoming_data or {}
+    incoming_filename = incoming.get("filename")
+    if (
+        incoming_filename
+        and merged.get("filename")
+        and incoming_filename != merged["filename"]
+    ):
+        merged = {}
+
+    active_print_states = {"printing", "busy", "paused"}
+    progress_fields = {
+        "progress",
+        "curr_layer",
+        "total_layers",
+        "print_time",
+        "supplies_usage",
+    }
+    for key, value in incoming.items():
+        if value is None or (key == "filename" and not value):
+            continue
+        if (
+            print_state in active_print_states
+            and key in progress_fields
+            and key in merged
+        ):
+            try:
+                if float(value) < float(merged[key]):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        merged[key] = value
+    return merged
+
+
+def build_print_job_state(print_data, print_state):
+    remaining_time = print_data.get("remain_time")
+    estimated_completion = None
+    if print_state in {"printing", "busy", "paused"} and remaining_time is not None:
+        try:
+            remaining_minutes = float(remaining_time)
+            if remaining_minutes >= 0:
+                estimated_completion = (
+                    datetime.now(timezone.utc)
+                    + timedelta(minutes=remaining_minutes)
+                ).isoformat()
+        except (OverflowError, TypeError, ValueError):
+            pass
+
+    return {
+        "filename": print_data.get("filename", ""),
+        "progress": print_data.get("progress"),
+        "current_layer": print_data.get("curr_layer"),
+        "total_layers": print_data.get("total_layers"),
+        "print_time": print_data.get("print_time"),
+        "remaining_time": remaining_time,
+        "estimated_completion": estimated_completion,
+        "material_usage": print_data.get("supplies_usage"),
+        "state": print_state,
+    }
+
+
+def print_speed_mode_name(value):
+    try:
+        mode = int(value)
+    except (TypeError, ValueError):
+        return "Unknown"
+    return PRINT_SPEED_MODE_NAMES.get(mode, f"Unknown ({mode})")
+
+
+def obico_interval_option(value):
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        seconds = OBICO_INTERVAL_PRESETS["30 s"]
+    return min(
+        OBICO_INTERVAL_PRESETS,
+        key=lambda option: abs(OBICO_INTERVAL_PRESETS[option] - seconds),
+    )
+
+
+def parse_obico_interval(value):
+    option = str(value or "").strip().lower()
+    for label, seconds in OBICO_INTERVAL_PRESETS.items():
+        if option == label.lower():
+            return seconds
+
+    try:
+        seconds = float(option)
+    except ValueError:
+        return None
+    if not seconds.is_integer() or not 1 <= seconds <= 3600:
+        return None
+    return OBICO_INTERVAL_PRESETS[obico_interval_option(int(seconds))]
+
+
+def get_firmware_version(data, keys):
+    if not isinstance(data, dict):
+        return None
+
+    for key in keys:
+        value = data.get(key)
+        if value is None:
+            continue
+        version = str(value).strip()
+        if version and version.casefold() not in {"unknown", "none", "null", "n/a"}:
+            return version
+    return None
+
+
+def normalize_printer_device_name(name, model):
+    display_name = str(name or "").strip()
+    model_name = str(model or "").strip()
+    if display_name.casefold().startswith("anycubic ") and model_name and model_name.casefold() != "unknown":
+        return model_name
+    return display_name or model_name or "Anycubic Printer"
+
+
+def translate_mqtt_error_message(value):
+    text = str(value or "").strip()
+    return MQTT_ERROR_MESSAGE_TRANSLATIONS.get(text, text)
+
+
+def classify_mqtt_error(message):
+    message_type = str(message.get("type") or "").strip().lower()
+    data = message.get("data")
+    data = data if isinstance(data, dict) else {}
+    project = data.get("project")
+    project = project if isinstance(project, dict) else {}
+    raw_state = message.get("state")
+    if raw_state is None:
+        raw_state = data.get("state", project.get("state"))
+    state = str(raw_state or "").strip().lower()
+    code = message.get("code", data.get("code"))
+    text = str(
+        message.get("msg")
+        or message.get("message")
+        or message.get("error")
+        or data.get("msg")
+        or data.get("message")
+        or ""
+    ).strip()
+    normalized_text = text.lower()
+    successful_message = (
+        normalized_text in {"", "done", "success", "ok", "用户发起"}
+        or normalized_text.endswith("/done")
+    )
+    job_failed = any(token in state for token in ("fail", "error", "abort", "cancel"))
+
+    try:
+        code_problem = code is not None and int(code) != 200
+    except (TypeError, ValueError):
+        code_problem = code is not None
+
+    error_message = any(
+        token in normalized_text
+        for token in ("error", "fail", "abort", "cancel", "exception")
+    )
+    message_problem = message_type == "error" or (
+        bool(text)
+        and not successful_message
+        and (message_type == "print" or error_message)
+    )
+    print_problem = job_failed or code_problem or message_problem
+
+    return {
+        "job_failed": job_failed,
+        "print_problem": print_problem,
+        "state": state,
+        "code": code,
+        "message": text,
+    }
+
+
+def get_color_box_id(box_data, fallback_index):
+    try:
+        return int(box_data.get("id", fallback_index))
+    except (AttributeError, TypeError, ValueError):
+        return int(fallback_index)
+
+
+def normalize_box_slot_index(slot_index, box_id, slots_per_box=4):
+    try:
+        index = int(slot_index)
+        box = int(box_id)
+    except (TypeError, ValueError):
+        return None
+
+    if 0 <= index < slots_per_box:
+        return index
+
+    local_index = index - (slots_per_box * box)
+    if 0 <= local_index < slots_per_box:
+        return local_index
+    return None
+
+
+def global_filament_index(box_id, local_slot_index, slots_per_box=4):
+    return int(box_id) * slots_per_box + int(local_slot_index)
+
+
+def discover_mqtt_settings(supervisor_token, fallback_settings, timeout=3):
+    fallback = dict(fallback_settings)
+    if not supervisor_token:
+        return fallback, "SUPERVISOR_TOKEN unavailable; using configured MQTT settings"
+
+    try:
+        response = requests.get(
+            f"{SUPERVISOR_API_URL}/services/mqtt",
+            headers={"Authorization": f"Bearer {supervisor_token}"},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        service = payload.get("data", payload)
+        host = service.get("host")
+        port = service.get("port")
+        if not host or port is None:
+            return fallback, "Supervisor MQTT service has no host/port; using configured settings"
+
+        settings = {
+            "broker": str(host),
+            "port": int(port),
+            "user": service.get("username") or fallback.get("user"),
+            "password": service.get("password") or fallback.get("password"),
+        }
+        return settings, f"Supervisor MQTT service found at {settings['broker']}:{settings['port']}"
+    except requests.HTTPError as err:
+        status = err.response.status_code if err.response is not None else "unknown"
+        return fallback, f"Supervisor MQTT lookup returned HTTP {status}; using configured settings"
+    except requests.RequestException as err:
+        return fallback, f"Supervisor MQTT lookup failed ({type(err).__name__}); using configured settings"
+    except (ValueError, TypeError, AttributeError):
+        return fallback, "Supervisor MQTT lookup returned invalid data; using configured settings"
