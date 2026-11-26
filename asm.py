@@ -792,8 +792,6 @@ class AnycubicMqttBridge:
         topic_prefix = self.get_topic_prefix()
         for unique_id in (
             f"{topic_prefix}_serial_number",
-            f"{topic_prefix}_target_nozzle_temp",
-            f"{topic_prefix}_target_hotbed_temp",
             f"{topic_prefix}_printer_camera_url",
         ):
             self.ha_client.publish(
@@ -1912,6 +1910,34 @@ class AnycubicMqttBridge:
                             }
                         )
 
+                        # Target hotbed temperature
+                        sensors.append(
+                            {
+                                "name": "Target Hotbed Temperature",
+                                "unique_id": f"{topic_prefix}_target_hotbed_temp",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/temperature",
+                                "value_template": "{{ value_json.target_hotbed_temp }}",
+                                "unit_of_measurement": "°C",
+                                "device_class": "temperature",
+                                "icon": "mdi:thermometer-chevron-up",
+                                "device": device_info,
+                            }
+                        )
+
+                        # Target nozzle temperature
+                        sensors.append(
+                            {
+                                "name": "Target Nozzle Temperature",
+                                "unique_id": f"{topic_prefix}_target_nozzle_temp",
+                                "state_topic": f"homeassistant/sensor/{topic_prefix}/temperature",
+                                "value_template": "{{ value_json.target_nozzle_temp }}",
+                                "unit_of_measurement": "°C",
+                                "device_class": "temperature",
+                                "icon": "mdi:thermometer-chevron-up",
+                                "device": device_info,
+                            }
+                        )
+
                     # Print speed mode
                     if "print_speed_mode" in printer_data:
                         sensors.append(
@@ -2843,14 +2869,14 @@ class AnycubicMqttBridge:
 
         temperature_controls = (
             {
-                "name": "Target Nozzle Temperature",
+                "name": "Set Nozzle Temperature",
                 "key": "target_nozzle_temp",
                 "maximum": 320,
                 "icon": "mdi:printer-3d-nozzle",
                 "handler": self._on_nozzle_temperature_command,
             },
             {
-                "name": "Target Hotbed Temperature",
+                "name": "Set Hotbed Temperature",
                 "key": "target_hotbed_temp",
                 "maximum": 120,
                 "icon": "mdi:heating-coil",

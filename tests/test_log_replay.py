@@ -220,5 +220,31 @@ class SimulatedPrintLifecycleTests(unittest.TestCase):
         self.assertEqual(harness.print_jobs[-1]["state"], "free")
 
 
+class TemperatureDiscoveryTests(unittest.TestCase):
+    def test_target_temperature_sensors_and_celsius_controls(self):
+        harness = BridgeHarness()
+        report = info("busy", project("printing"))
+        report["data"]["temp"] = {
+            "curr_hotbed_temp": 60,
+            "curr_nozzle_temp": 210,
+            "target_hotbed_temp": 60,
+            "target_nozzle_temp": 210,
+        }
+        harness.send("info", report)
+
+        configs = {}
+        for call in harness.bridge.ha_client.publish.call_args_list:
+            topic, payload = call.args[0], call.args[1] if len(call.args) > 1 else None
+            if topic.endswith("/config") and payload:
+                configs[topic] = json.loads(payload)
+        prefix = harness.bridge.get_topic_prefix()
+
+        for key in ("target_hotbed_temp", "target_nozzle_temp"):
+            sensor = configs[f"homeassistant/sensor/{prefix}_{key}/config"]
+            self.assertEqual(sensor["unit_of_measurement"], "°C")
+            control = configs[f"homeassistant/number/{prefix}_{key}_control/config"]
+            self.assertEqual(control["unit_of_measurement"], "°C")
+
+
 if __name__ == "__main__":
     unittest.main()

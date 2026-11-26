@@ -71,9 +71,11 @@ address remains available as a diagnostic entity.
 Printer firmware and each ACE Pro box's firmware are also shown in their
 respective Home Assistant device information when reported by the printer.
 
-Target nozzle and hotbed temperatures are adjustable from Home Assistant, as
-are the main, auxiliary, and ACE box fans. Temperature controls use `0–320 °C`
-for the nozzle and `0–120 °C` for the bed; fan controls use `0–100%`.
+Target nozzle and hotbed temperatures are reported as `Target ... Temperature`
+sensors (°C) and adjustable with the `Set Nozzle/Hotbed Temperature` controls,
+as are the main, auxiliary, and ACE box fans. Temperature controls accept
+`0–320 °C` for the nozzle and `0–120 °C` for the bed (Home Assistant displays
+them in its configured unit system); fan controls use `0–100%`.
 
 The bridge also exposes `Job Failed` and `Print Problem` binary sensors from
 Anycubic MQTT reports. Their attributes include the reported state, code,
