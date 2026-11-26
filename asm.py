@@ -29,6 +29,7 @@ from threading import Thread, Event
 import traceback
 import random
 from obico import (
+    ACTIVE_PRINT_JOB_STATES,
     DEFAULT_OBICO_API_HOST,
     DEFAULT_OBICO_API_URL,
     build_api_url,
@@ -38,6 +39,7 @@ from obico import (
     printer_is_busy,
     resolve_print_job_state,
     resolve_printer_state,
+    resolve_project_print_state,
     should_press_pause_button,
 )
 
@@ -2001,6 +2003,32 @@ class AnycubicMqttBridge:
 
                     # Keep the last known state when an info report omits it.
                     reported_state = printer_data.get("state")
+                    project_data = printer_data.get("project")
+                    if isinstance(project_data, dict) and project_data:
+                        self.current_print_state = resolve_project_print_state(
+                            project_data.get("state"), self.current_print_state
+                        )
+                    elif (
+                        "project" in printer_data
+                        and str(reported_state or "").strip().lower() == "free"
+                        and self.current_print_state in ACTIVE_PRINT_JOB_STATES
+                    ):
+                        # The job ended without a print report reaching us.
+                        last_project = printer_data.get("last_project")
+                        project_data = last_project if isinstance(last_project, dict) else None
+                        ended_state = resolve_project_print_state(
+                            (project_data or {}).get("state"), "free"
+                        )
+                        self.current_print_state = (
+                            ended_state
+                            if ended_state not in ACTIVE_PRINT_JOB_STATES
+                            else "free"
+                        )
+                        logger.info(
+                            f"Printer reports idle; print job ended as {self.current_print_state}"
+                        )
+                    else:
+                        project_data = None
                     self.printer_state = resolve_printer_state(
                         reported_state,
                         self.current_print_state,
@@ -2056,8 +2084,7 @@ class AnycubicMqttBridge:
 
 
                     # Also extract and publish print job data if available
-                    if "project" in printer_data and printer_data["project"]:
-                        project_data = printer_data["project"]
+                    if project_data:
                         logger.debug(f"Extracted print job data from info report: {json.dumps(project_data)}")
                         
                         # Save the print data for future use
@@ -2159,6 +2186,12 @@ class AnycubicMqttBridge:
                     logger.info(f"Received print job report: action={data.get('action', 'unknown')}, state={data.get('state', 'unknown')}")
                     logger.debug(f"Print job report data: {json.dumps(data)}")
                     try:
+                        # getSliceParam replies (always state "done") carry slicer
+                        # settings, not job state or progress, so they are ignored.
+                        is_slice_param = (
+                            str(data.get("action") or "").strip().lower()
+                            == "getsliceparam"
+                        )
                         previous_print_state = self.current_print_state
                         self.current_print_state = resolve_print_job_state(
                             data.get("action"),
@@ -2169,25 +2202,26 @@ class AnycubicMqttBridge:
                             self.printer_state = "busy"
                         elif self.current_print_state == "paused":
                             self.printer_state = "paused"
-                        elif self.current_print_state == "free":
+                        elif self.current_print_state in {"free", "finished"}:
                             self.printer_state = "free"
                         elif self.current_print_state in {"leveling", "preheating"}:
                             self.printer_state = self.current_print_state
 
                         topic_prefix = self.get_topic_prefix()
-                        state_data = dict(getattr(self, "latest_printer_state", {}))
-                        state_data["state"] = self.printer_state
-                        state_data["last_updated"] = time.strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        )
-                        self.latest_printer_state = state_data
-                        self.ha_client.publish(
-                            f"homeassistant/sensor/{topic_prefix}/state",
-                            json.dumps(state_data),
-                            retain=True,
-                        )
+                        if not is_slice_param:
+                            state_data = dict(getattr(self, "latest_printer_state", {}))
+                            state_data["state"] = self.printer_state
+                            state_data["last_updated"] = time.strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                            self.latest_printer_state = state_data
+                            self.ha_client.publish(
+                                f"homeassistant/sensor/{topic_prefix}/state",
+                                json.dumps(state_data),
+                                retain=True,
+                            )
 
-                        if "data" in data and data["data"]:
+                        if "data" in data and data["data"] and not is_slice_param:
                             print_data = data["data"]
                             
                             # Save the print data for future use
@@ -2229,14 +2263,14 @@ class AnycubicMqttBridge:
                             
                             logger.debug(f"Published print job update: {json.dumps(print_state)}")
                             
-                            # If we receive a completion message, clear the print job data
-                            if data.get("action") in {
-                                "stop",
-                                "cancel",
-                                "finish",
-                                "complete",
-                            }:
-                                logger.info("Print job completed")
+                            # Log completion once, on the transition out of an active job.
+                            if (
+                                self.current_print_state in {"free", "finished"}
+                                and previous_print_state in ACTIVE_PRINT_JOB_STATES
+                            ):
+                                logger.info(
+                                    f"Print job completed: {self.current_print_state}"
+                                )
                             
                             # Create print controls
                             if not hasattr(self, "print_controls_created") or not self.print_controls_created:

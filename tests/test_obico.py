@@ -13,6 +13,7 @@ from obico import (
     printer_is_busy,
     resolve_print_job_state,
     resolve_printer_state,
+    resolve_project_print_state,
     should_press_pause_button,
 )
 
@@ -205,6 +206,42 @@ class PrinterStateTests(unittest.TestCase):
     def test_leveling_phase_overrides_transient_printer_busy_or_free(self):
         self.assertEqual(resolve_printer_state("busy", "leveling", "unknown"), "leveling")
         self.assertEqual(resolve_printer_state("free", "preheating", "unknown"), "preheating")
+
+    def test_start_report_with_finished_state_completes_print(self):
+        # Firmware 2.7.2.7 reports completion as action=start, state=finished.
+        self.assertEqual(
+            resolve_print_job_state("start", "finished", "printing"), "finished"
+        )
+        self.assertEqual(resolve_printer_state("free", "finished", "busy"), "free")
+
+    def test_pause_resume_and_cancel_reports(self):
+        cases = [
+            ("pause", "pausing", "printing", "paused"),
+            ("pause", "paused", "printing", "paused"),
+            ("resume", "resumed", "paused", "printing"),
+            ("stop", "stoped", "printing", "free"),
+            ("stop", "canceled", "paused", "free"),
+        ]
+        for action, reported, previous, expected in cases:
+            with self.subTest(action=action, reported=reported):
+                self.assertEqual(
+                    resolve_print_job_state(action, reported, previous), expected
+                )
+
+    def test_info_project_state_maps_to_print_job_state(self):
+        cases = {
+            "auto_leveling": "leveling",
+            "preheating": "preheating",
+            "printing": "printing",
+            "paused": "paused",
+            "finished": "finished",
+        }
+        for project_state, expected in cases.items():
+            with self.subTest(project_state=project_state):
+                self.assertEqual(
+                    resolve_project_print_state(project_state, "unknown"), expected
+                )
+        self.assertEqual(resolve_project_print_state(None, "printing"), "printing")
 
     def test_pause_button_only_pressed_once_for_busy_printer_failure(self):
         self.assertTrue(should_press_pause_button(True, "busy", False))

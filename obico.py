@@ -100,11 +100,42 @@ def resolve_printer_state(reported_state, print_job_state, previous_state):
         return print_job
     if print_job == "printing" and reported in inactive_states:
         return "busy"
-    if print_job == "paused" and reported in inactive_states:
+    if print_job == "paused" and reported in inactive_states | {"busy"}:
         return "paused"
     if reported in {"", "unknown", "unavailable"}:
         return previous if previous else "unknown"
     return reported
+
+
+ACTIVE_PRINT_JOB_STATES = {"leveling", "preheating", "printing", "paused"}
+_REPORTED_JOB_STATES = {
+    "auto_leveling": "leveling",
+    "autoleveling": "leveling",
+    "leveling": "leveling",
+    "preheating": "preheating",
+    "printing": "printing",
+    "resuming": "printing",
+    "resumed": "printing",
+    "paused": "paused",
+    "pausing": "paused",
+    "finished": "finished",
+    "complete": "finished",
+    "completed": "finished",
+    "stopping": "free",
+    "stoping": "free",
+    "stopped": "free",
+    "stoped": "free",
+    "canceled": "free",
+    "cancelled": "free",
+    "failed": "free",
+}
+
+
+def resolve_project_print_state(project_state, previous_state):
+    """Map an info report's project/last_project state to a print job state."""
+    reported = str(project_state or "").strip().lower()
+    previous = str(previous_state or "").strip().lower()
+    return _REPORTED_JOB_STATES.get(reported, previous or "unknown")
 
 
 def resolve_print_job_state(action, reported_state, previous_state):
@@ -112,17 +143,18 @@ def resolve_print_job_state(action, reported_state, previous_state):
     reported = str(reported_state or "").strip().lower()
     previous = str(previous_state or "").strip().lower()
 
+    # getSliceParam replies always report "done"; they say nothing about the job.
     if action == "getsliceparam":
         return previous or "unknown"
-    if action == "start" and reported in {"auto_leveling", "autoleveling", "leveling"}:
-        return "leveling"
-    if action == "start" and reported == "preheating":
-        return "preheating"
-    if action in {"start", "resume"} and reported in {"printing", "busy"}:
+    if reported in _REPORTED_JOB_STATES:
+        return _REPORTED_JOB_STATES[reported]
+    if action in {"start", "resume"} and reported == "busy":
         return "printing"
     if action == "pause":
         return "paused"
-    if action in {"stop", "cancel", "finish", "complete"}:
+    if action in {"finish", "complete"}:
+        return "finished"
+    if action in {"stop", "cancel"}:
         return "free"
     return previous or "unknown"
 

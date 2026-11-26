@@ -59,8 +59,12 @@ Each detected ACE Pro box and its filament sensors are grouped under a separate
 Home Assistant child device linked to the printer. Box names use the firmware
 index, so firmware ID `0` appears as `ACE Pro Box 0`.
 
-`Printer State` reports leveling/preheating phases. During leveling,
-`Print Progress` shows the leveling percentage alongside the `leveling` state.
+`Printer State` reports `leveling` and `preheating` phases, then `busy`,
+`paused`, or `free`. During leveling, `Print Progress` shows the leveling
+percentage alongside the `leveling` state. `Print State` shows the job phase
+(`leveling`, `preheating`, `printing`, `paused`, `finished`, or `free` after a
+cancel). Firmware 2.7.2.7+ slicer-parameter replies (`getSliceParam` with
+state `done`) are ignored, so they no longer reset the print state or job details.
 
 The printer serial number is shown in Home Assistant device information; its IP
 address remains available as a diagnostic entity.
